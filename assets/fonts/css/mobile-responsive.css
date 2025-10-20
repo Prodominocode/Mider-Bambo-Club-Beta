@@ -1,0 +1,629 @@
+/* Mobile-First Responsive Design for Bamboo Club Mobile App */
+
+/* Import font configuration with maximum obfuscation */
+@import url('./fonts-ultimate-obfuscated.css');
+
+/* ===== MOBILE FIRST APPROACH ===== */
+/* Base styles are for mobile, then we scale up */
+
+/* CSS Custom Properties for consistent theming */
+:root {
+    --primary-color: #27ae60;
+    --primary-dark: #229954;
+    --secondary-color: #3498db;
+    --accent-color: #e74c3c;
+    --success-color: #27ae60;
+    --warning-color: #f39c12;
+    --danger-color: #e74c3c;
+    --info-color: #3498db;
+    
+    --text-primary: #2c3e50;
+    --text-secondary: #7f8c8d;
+    --text-light: #bdc3c7;
+    
+    --bg-primary: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --bg-tertiary: #ecf0f1;
+    
+    --border-color: #e0e0e0;
+    --border-radius: 12px;
+    --border-radius-sm: 8px;
+    
+    --shadow-sm: 0 2px 4px rgba(0,0,0,0.1);
+    --shadow-md: 0 4px 8px rgba(0,0,0,0.1);
+    --shadow-lg: 0 8px 16px rgba(0,0,0,0.1);
+    
+    --spacing-xs: 8px;
+    --spacing-sm: 16px;
+    --spacing-md: 24px;
+    --spacing-lg: 32px;
+    --spacing-xl: 48px;
+}
+
+/* ===== MOBILE BASE STYLES ===== */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    direction: rtl;
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+    -ms-text-size-adjust: 100%;
+}
+
+body {
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    font-size: var(--font-size-base);
+    overflow-x: hidden;
+}
+
+/* ===== MOBILE NAVIGATION ===== */
+.mobile-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-color);
+    z-index: 1000;
+    padding: var(--spacing-xs) 0;
+    box-shadow: var(--shadow-lg);
+}
+
+.mobile-nav-list {
+    display: flex;
+    justify-content: space-around;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.mobile-nav-item {
+    flex: 1;
+    text-align: center;
+}
+
+.mobile-nav-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: var(--spacing-xs);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: var(--font-size-xs);
+    transition: color 0.3s ease;
+}
+
+.mobile-nav-link.active {
+    color: var(--primary-color);
+}
+
+.mobile-nav-icon {
+    font-size: var(--font-size-lg);
+    margin-bottom: 4px;
+}
+
+/* ===== MOBILE HEADER ===== */
+.mobile-header {
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+    color: white;
+    padding: var(--spacing-md);
+    text-align: center;
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    box-shadow: var(--shadow-md);
+}
+
+.mobile-header h1 {
+    font-size: var(--font-size-xl);
+    margin: 0;
+    font-weight: 600;
+}
+
+.mobile-header .user-info {
+    margin-top: var(--spacing-xs);
+    font-size: var(--font-size-sm);
+    opacity: 0.9;
+}
+
+/* ===== MOBILE CONTAINER ===== */
+.mobile-container {
+    padding: var(--spacing-md);
+    padding-bottom: 80px; /* Space for bottom navigation */
+    max-width: 100%;
+    margin: 0 auto;
+}
+
+/* ===== MOBILE CARDS ===== */
+.mobile-card {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: var(--spacing-md);
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+}
+
+.mobile-card-header {
+    padding: var(--spacing-md);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.mobile-card-header h2 {
+    font-size: var(--font-size-lg);
+    margin: 0;
+    color: var(--text-primary);
+}
+
+.mobile-card-body {
+    padding: var(--spacing-md);
+}
+
+.mobile-card-footer {
+    padding: var(--spacing-md);
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+}
+
+/* ===== MOBILE STATS ===== */
+.mobile-stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
+}
+
+.mobile-stat-card {
+    background: var(--bg-primary);
+    padding: var(--spacing-md);
+    border-radius: var(--border-radius-sm);
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-color);
+}
+
+.mobile-stat-number {
+    font-size: var(--font-size-2xl);
+    font-weight: bold;
+    color: var(--primary-color);
+    margin-bottom: var(--spacing-xs);
+}
+
+.mobile-stat-label {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+
+/* ===== MOBILE FORMS ===== */
+.mobile-form-group {
+    margin-bottom: var(--spacing-md);
+}
+
+.mobile-form-label {
+    display: block;
+    margin-bottom: var(--spacing-xs);
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.mobile-form-control {
+    width: 100%;
+    padding: var(--spacing-md);
+    border: 2px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    font-size: var(--font-size-base);
+    transition: border-color 0.3s ease;
+    background: var(--bg-primary);
+}
+
+.mobile-form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(39, 174, 96, 0.1);
+}
+
+.mobile-form-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--spacing-sm);
+}
+
+/* ===== MOBILE BUTTONS ===== */
+.mobile-btn {
+    display: inline-block;
+    padding: var(--spacing-md) var(--spacing-lg);
+    border: none;
+    border-radius: var(--border-radius-sm);
+    cursor: pointer;
+    text-decoration: none;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    text-align: center;
+    transition: all 0.3s ease;
+    width: 100%;
+    margin-bottom: var(--spacing-sm);
+}
+
+.mobile-btn-primary {
+    background: var(--primary-color);
+    color: white;
+}
+
+.mobile-btn-primary:hover {
+    background: var(--primary-dark);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.mobile-btn-secondary {
+    background: var(--secondary-color);
+    color: white;
+}
+
+.mobile-btn-success {
+    background: var(--success-color);
+    color: white;
+}
+
+.mobile-btn-warning {
+    background: var(--warning-color);
+    color: white;
+}
+
+.mobile-btn-danger {
+    background: var(--danger-color);
+    color: white;
+}
+
+.mobile-btn-outline {
+    background: transparent;
+    border: 2px solid var(--primary-color);
+    color: var(--primary-color);
+}
+
+.mobile-btn-outline:hover {
+    background: var(--primary-color);
+    color: white;
+}
+
+.mobile-btn-sm {
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: var(--font-size-sm);
+}
+
+/* ===== MOBILE LOYALTY CARDS ===== */
+.mobile-loyalty-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: var(--spacing-md);
+    border-radius: var(--border-radius);
+    margin-bottom: var(--spacing-sm);
+    box-shadow: var(--shadow-md);
+    position: relative;
+    overflow: hidden;
+}
+
+.mobile-loyalty-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.1);
+    z-index: 1;
+}
+
+.mobile-loyalty-card-content {
+    position: relative;
+    z-index: 2;
+}
+
+.mobile-loyalty-card h3 {
+    font-size: var(--font-size-lg);
+    margin-bottom: var(--spacing-xs);
+}
+
+.mobile-loyalty-card .card-description {
+    font-size: var(--font-size-sm);
+    opacity: 0.9;
+    margin-bottom: var(--spacing-sm);
+}
+
+.mobile-loyalty-card .card-progress {
+    background: rgba(255, 255, 255, 0.2);
+    height: 8px;
+    border-radius: 4px;
+    margin: var(--spacing-sm) 0;
+    overflow: hidden;
+}
+
+.mobile-loyalty-card .card-progress-bar {
+    height: 100%;
+    background: #fff;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.mobile-loyalty-card .card-status {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: var(--font-size-sm);
+}
+
+/* ===== MOBILE PURCHASE ITEMS ===== */
+.mobile-purchase-item {
+    background: var(--bg-primary);
+    padding: var(--spacing-md);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: var(--spacing-sm);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+}
+
+.mobile-purchase-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-sm);
+}
+
+.mobile-purchase-date {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+
+.mobile-purchase-amount {
+    font-size: var(--font-size-lg);
+    font-weight: bold;
+    color: var(--primary-color);
+}
+
+.mobile-purchase-details {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+
+/* ===== MOBILE ALERTS ===== */
+.mobile-alert {
+    padding: var(--spacing-md);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: var(--spacing-md);
+    border-right: 4px solid;
+}
+
+.mobile-alert-success {
+    background: #d4edda;
+    border-color: var(--success-color);
+    color: #155724;
+}
+
+.mobile-alert-error {
+    background: #f8d7da;
+    border-color: var(--danger-color);
+    color: #721c24;
+}
+
+.mobile-alert-warning {
+    background: #fff3cd;
+    border-color: var(--warning-color);
+    color: #856404;
+}
+
+.mobile-alert-info {
+    background: #d1ecf1;
+    border-color: var(--info-color);
+    color: #0c5460;
+}
+
+/* ===== MOBILE UTILITIES ===== */
+.mobile-text-center { text-align: center; }
+.mobile-text-right { text-align: right; }
+.mobile-text-left { text-align: left; }
+
+.mobile-mb-0 { margin-bottom: 0; }
+.mobile-mb-sm { margin-bottom: var(--spacing-sm); }
+.mobile-mb-md { margin-bottom: var(--spacing-md); }
+.mobile-mb-lg { margin-bottom: var(--spacing-lg); }
+
+.mobile-mt-0 { margin-top: 0; }
+.mobile-mt-sm { margin-top: var(--spacing-sm); }
+.mobile-mt-md { margin-top: var(--spacing-md); }
+.mobile-mt-lg { margin-top: var(--spacing-lg); }
+
+.mobile-p-0 { padding: 0; }
+.mobile-p-sm { padding: var(--spacing-sm); }
+.mobile-p-md { padding: var(--spacing-md); }
+.mobile-p-lg { padding: var(--spacing-lg); }
+
+/* ===== MOBILE PAGINATION ===== */
+.mobile-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin: var(--spacing-md) 0;
+}
+
+.mobile-page-link {
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    text-decoration: none;
+    border-radius: var(--border-radius-sm);
+    transition: all 0.3s ease;
+}
+
+.mobile-page-link:hover,
+.mobile-page-link.active {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+
+/* ===== MOBILE LOADING ===== */
+.mobile-loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: var(--spacing-xl);
+}
+
+.mobile-spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid var(--border-color);
+    border-top: 4px solid var(--primary-color);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* ===== MOBILE EMPTY STATE ===== */
+.mobile-empty-state {
+    text-align: center;
+    padding: var(--spacing-xl);
+    color: var(--text-secondary);
+}
+
+.mobile-empty-state-icon {
+    font-size: 48px;
+    margin-bottom: var(--spacing-md);
+    opacity: 0.5;
+}
+
+.mobile-empty-state h3 {
+    margin-bottom: var(--spacing-sm);
+    color: var(--text-secondary);
+}
+
+/* ===== RESPONSIVE BREAKPOINTS ===== */
+
+/* Small tablets (768px and up) */
+@media (min-width: 768px) {
+    .mobile-container {
+        max-width: 768px;
+        padding: var(--spacing-lg);
+    }
+    
+    .mobile-stats-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+    
+    .mobile-form-row {
+        grid-template-columns: 1fr 1fr;
+    }
+    
+    .mobile-btn {
+        width: auto;
+        margin-right: var(--spacing-sm);
+    }
+}
+
+/* Large tablets and small desktops (1024px and up) */
+@media (min-width: 1024px) {
+    .mobile-container {
+        max-width: 1024px;
+    }
+    
+    .mobile-stats-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+    
+    .mobile-loyalty-card {
+        display: inline-block;
+        width: calc(50% - var(--spacing-sm));
+        margin-right: var(--spacing-sm);
+        vertical-align: top;
+    }
+}
+
+/* Large desktops (1200px and up) */
+@media (min-width: 1200px) {
+    .mobile-container {
+        max-width: 1200px;
+    }
+    
+    .mobile-loyalty-card {
+        width: calc(33.333% - var(--spacing-sm));
+    }
+}
+
+/* ===== MOBILE ANIMATIONS ===== */
+.mobile-fade-in {
+    animation: fadeIn 0.5s ease-in;
+}
+
+.mobile-slide-up {
+    animation: slideUp 0.3s ease-out;
+}
+
+.mobile-bounce {
+    animation: bounce 0.6s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes bounce {
+    0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+    40% { transform: translateY(-10px); }
+    60% { transform: translateY(-5px); }
+}
+
+/* ===== MOBILE TOUCH OPTIMIZATIONS ===== */
+.mobile-btn,
+.mobile-form-control,
+.mobile-page-link {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+.mobile-btn:active {
+    transform: scale(0.98);
+}
+
+/* ===== MOBILE ACCESSIBILITY ===== */
+@media (prefers-reduced-motion: reduce) {
+    .mobile-btn,
+    .mobile-loyalty-card,
+    .mobile-purchase-item {
+        transition: none;
+    }
+    
+    .mobile-spinner {
+        animation: none;
+    }
+}
+
+/* ===== MOBILE DARK MODE SUPPORT ===== */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-primary: #1a1a1a;
+        --bg-secondary: #2d2d2d;
+        --bg-tertiary: #404040;
+        --text-primary: #ffffff;
+        --text-secondary: #cccccc;
+        --border-color: #404040;
+    }
+}

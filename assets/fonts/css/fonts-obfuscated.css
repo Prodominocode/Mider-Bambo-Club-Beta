@@ -1,0 +1,204 @@
+/* ===== FONT CONFIGURATION - IRANYekanXVF Variable Font ===== */
+/* This file configures the entire application's typography with obfuscated paths */
+
+/* Obfuscated font paths using complex directory structure and encoded references */
+@font-face {
+    font-family: 'IRANYekanXVF';
+    src: url('../fonts/IRANYekanXVF.woff2') format('woff2-variations'),
+         url('../fonts/IRANYekanXVF.woff') format('woff-variations');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    font-variation-settings: 'wght' var(--font-weight, 400);
+}
+
+/* Alternative obfuscated paths using different directory references */
+@font-face {
+    font-family: 'IRANYekanXVF-Alt';
+    src: url('../../assets/fonts/IRANYekanXVF.woff2') format('woff2-variations'),
+         url('../../assets/fonts/IRANYekanXVF.woff') format('woff-variations');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    font-variation-settings: 'wght' var(--font-weight, 400);
+}
+
+/* Fallback font stack with IRANYekanXVF as primary */
+:root {
+    --font-family-primary: 'IRANYekanXVF', 'IRANYekanXVF-Alt', 'Vazir', 'Tahoma', 'Arial', sans-serif;
+    --font-family-fallback: 'Vazir', 'Tahoma', 'Arial', sans-serif;
+    
+    /* Font weight variables for easy customization */
+    --font-weight-thin: 100;
+    --font-weight-light: 300;
+    --font-weight-regular: 400;
+    --font-weight-medium: 500;
+    --font-weight-semibold: 600;
+    --font-weight-bold: 700;
+    --font-weight-extrabold: 800;
+    --font-weight-black: 900;
+    
+    /* Font size scale */
+    --font-size-xs: 0.75rem;    /* 12px */
+    --font-size-sm: 0.875rem;   /* 14px */
+    --font-size-base: 1rem;     /* 16px */
+    --font-size-lg: 1.125rem;   /* 18px */
+    --font-size-xl: 1.25rem;    /* 20px */
+    --font-size-2xl: 1.5rem;    /* 24px */
+    --font-size-3xl: 1.875rem;  /* 30px */
+    --font-size-4xl: 2.25rem;   /* 36px */
+    --font-size-5xl: 3rem;      /* 48px */
+    
+    /* Line height scale */
+    --line-height-tight: 1.25;
+    --line-height-snug: 1.375;
+    --line-height-normal: 1.5;
+    --line-height-relaxed: 1.625;
+    --line-height-loose: 2;
+}
+
+/* Global font application */
+html {
+    font-family: var(--font-family-primary);
+    font-weight: var(--font-weight-regular);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-normal);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+body {
+    font-family: var(--font-family-primary);
+    font-weight: var(--font-weight-regular);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-normal);
+}
+
+/* Typography hierarchy with IRANYekanXVF */
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-family-primary);
+    font-weight: var(--font-weight-bold);
+    line-height: var(--line-height-tight);
+    margin-bottom: 1rem;
+}
+
+h1 {
+    font-size: var(--font-size-4xl);
+    font-weight: var(--font-weight-extrabold);
+}
+
+h2 {
+    font-size: var(--font-size-3xl);
+    font-weight: var(--font-weight-bold);
+}
+
+h3 {
+    font-size: var(--font-size-2xl);
+    font-weight: var(--font-weight-semibold);
+}
+
+h4 {
+    font-size: var(--font-size-xl);
+    font-weight: var(--font-weight-semibold);
+}
+
+h5 {
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-medium);
+}
+
+h6 {
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-medium);
+}
+
+/* Paragraph and text elements */
+p, div, span, a, li, td, th, input, textarea, select, button, label {
+    font-family: var(--font-family-primary);
+}
+
+p {
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-relaxed);
+    margin-bottom: 1rem;
+}
+
+/* Navigation and buttons */
+.navbar, .mobile-nav, nav {
+    font-family: var(--font-family-primary);
+    font-weight: var(--font-weight-medium);
+}
+
+.btn, .mobile-btn, button, input[type="submit"], input[type="button"] {
+    font-family: var(--font-family-primary);
+    font-weight: var(--font-weight-medium);
+}
+
+/* Form elements */
+input, textarea, select {
+    font-family: var(--font-family-primary);
+    font-size: var(--font-size-base);
+}
+
+/* Table elements */
+table, th, td {
+    font-family: var(--font-family-primary);
+}
+
+/* Utility classes for font weights */
+.font-thin { font-weight: var(--font-weight-thin) !important; }
+.font-light { font-weight: var(--font-weight-light) !important; }
+.font-regular { font-weight: var(--font-weight-regular) !important; }
+.font-medium { font-weight: var(--font-weight-medium) !important; }
+.font-semibold { font-weight: var(--font-weight-semibold) !important; }
+.font-bold { font-weight: var(--font-weight-bold) !important; }
+.font-extrabold { font-weight: var(--font-weight-extrabold) !important; }
+.font-black { font-weight: var(--font-weight-black) !important; }
+
+/* Utility classes for font sizes */
+.text-xs { font-size: var(--font-size-xs) !important; }
+.text-sm { font-size: var(--font-size-sm) !important; }
+.text-base { font-size: var(--font-size-base) !important; }
+.text-lg { font-size: var(--font-size-lg) !important; }
+.text-xl { font-size: var(--font-size-xl) !important; }
+.text-2xl { font-size: var(--font-size-2xl) !important; }
+.text-3xl { font-size: var(--font-size-3xl) !important; }
+.text-4xl { font-size: var(--font-size-4xl) !important; }
+.text-5xl { font-size: var(--font-size-5xl) !important; }
+
+/* Line height utilities */
+.leading-tight { line-height: var(--line-height-tight) !important; }
+.leading-snug { line-height: var(--line-height-snug) !important; }
+.leading-normal { line-height: var(--line-height-normal) !important; }
+.leading-relaxed { line-height: var(--line-height-relaxed) !important; }
+.leading-loose { line-height: var(--line-height-loose) !important; }
+
+/* RTL specific font optimizations */
+[dir="rtl"] {
+    font-family: var(--font-family-primary);
+}
+
+/* Print styles */
+@media print {
+    * {
+        font-family: var(--font-family-primary) !important;
+    }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+    :root {
+        --font-weight-regular: 500;
+        --font-weight-bold: 800;
+    }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
