@@ -47,7 +47,7 @@ if ($user) {
             require_once 'config.php';
             $api_key = KAVENEGAR_API_KEY;
             $receptor = $mobile;
-            $message = "به باشگاه مشتریان پوشاک آقایان و بانوان میدر خوش آمدید.\nmiderclub.ir";
+            $message = "پوشاک میدر\nبه باشگاه مشتریان فروشگاه خوش آمدید.\nشعبه ساری\nmiderclub.ir";
             $url = "https://api.kavenegar.com/v1/$api_key/sms/send.json";
             $postfields = http_build_query([
                 'receptor' => $receptor,

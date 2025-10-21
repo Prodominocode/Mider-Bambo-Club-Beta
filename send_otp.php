@@ -31,7 +31,7 @@ if ($exists) {
 // Send SMS via Kavenegar
 $api_key = KAVENEGAR_API_KEY;
 $receptor = $mobile;
-$message = "کد تاییدیه شما جهت ورود به باشگاه مشتریان پوشاک میدر  $otp_code";
+$message = "پوشاک میدر\nکد تاییدیه شما جهت ورود به باشگاه مشتریان: $otp_code";
 $url = "https://api.kavenegar.com/v1/$api_key/sms/send.json";
 
 $postfields = http_build_query([

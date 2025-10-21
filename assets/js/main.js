@@ -50,13 +50,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
-  // Profile box click
-  document.body.addEventListener('click', function(e) {
-    if (e.target && e.target.classList.contains('profile-box')) {
-      const form = document.getElementById('profile-form');
-      if (form) form.classList.toggle('active');
-    }
-  });
+  // Profile box click - Removed as this is now handled in dashboard.php directly
 
   // Profile update form submit
   document.body.addEventListener('submit', function(e) {
@@ -66,7 +60,6 @@ document.addEventListener('DOMContentLoaded', function() {
       const formData = new FormData(form);
       fetch('update_profile.php', {
         method: 'POST',
-        headers: { 'Accept': 'application/json' },
         body: formData
       })
       .then(res => res.text())
@@ -74,7 +67,7 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
           const data = JSON.parse(text);
           if (data.status === 'success') {
-            document.getElementById('credit').textContent = 'اعتبار شما: ' + data.credit + ' امتیاز';
+            document.getElementById('credit').textContent = 'اعتبار شما: ' + (data.credit * 5000).toLocaleString() + ' تومان';
             form.classList.remove('active');
           } else {
             alert(data.message || 'بروز خطا در بروزرسانی.');

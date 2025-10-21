@@ -11,3 +11,6 @@ define('SITE_NAME', 'Miderclub');
 define('ADMIN_ALLOWED', serialize([
 	'09119246366','09194467966','09366263863','09333184589','09115809496','09113239550' // example admin number (replace with real ones)
 ]));
+
+// Debug mode - set to false in production
+define('DEBUG_MODE', false);

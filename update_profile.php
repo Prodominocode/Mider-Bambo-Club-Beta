@@ -14,8 +14,7 @@ try {
     $user_id = $_SESSION['user_id'];
 
     $email = isset($_POST['email']) ? trim($_POST['email']) : null;
-    $first_name = isset($_POST['first_name']) ? trim($_POST['first_name']) : null;
-    $last_name = isset($_POST['last_name']) ? trim($_POST['last_name']) : null;
+    $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : null;
     $city = isset($_POST['city']) ? trim($_POST['city']) : null;
     $birthday = isset($_POST['birthday']) ? trim($_POST['birthday']) : null; // Gregorian (ignored if birthday_jalali provided)
     $birthday_jalali = isset($_POST['birthday_jalali']) ? trim($_POST['birthday_jalali']) : null; // prefer this
@@ -38,15 +37,14 @@ try {
 
     $mobile = $user['mobile'];
 
-    // Build full_name from provided first/last (prefer these), fallback to previous full_name
-    $full_name = $user['full_name'];
-    if ($first_name || $last_name) {
-        $full_name = trim(($first_name ?: '') . ' ' . ($last_name ?: ''));
+    // Use provided full_name or fallback to previous one
+    if (!$full_name) {
+        $full_name = $user['full_name'];
     }
 
     // Only add credit if profile fields were empty before
     $add_credit = 0;
-    if (empty($user['email']) && $email) $add_credit = 20;
+    if (empty($user['email']) && $email) $add_credit = 0;
 
     $stmt = $pdo->prepare("UPDATE subscribers SET full_name=?, email=?, city=?, birthday=?, credit=credit+? WHERE id=?");
     $stmt->execute([$full_name, $email, $city, $save_birthday, $add_credit, $user_id]);
