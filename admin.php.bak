@@ -156,13 +156,9 @@ function mask_mobile_for_seller($mobile) {
  * @param int $current_sales_center_id Current sales center ID
  * @return array Modified transaction data
  */
-function process_transaction_for_display($transaction, $is_manager, $current_branch_id, $current_sales_center_id, $current_admin_mobile = '') {
+function process_transaction_for_display($transaction, $is_manager, $current_branch_id, $current_sales_center_id) {
     // Clone transaction to avoid modifying the original
     $result = $transaction;
-    
-    // Ensure required fields have default values
-    $result['branch_id'] = isset($transaction['branch_id']) ? (int)$transaction['branch_id'] : 0;
-    $result['sales_center_id'] = isset($transaction['sales_center_id']) ? (int)$transaction['sales_center_id'] : 0;
     
     if (!$is_manager) {
         // Mask phone number for sellers
@@ -170,19 +166,23 @@ function process_transaction_for_display($transaction, $is_manager, $current_bra
             $result['mobile'] = mask_mobile_for_seller($transaction['mobile']);
         }
         
-        // Determine transaction ownership
-        $transaction_admin = isset($transaction['admin_mobile']) ? $transaction['admin_mobile'] : 
-                           (isset($transaction['admin_number']) ? $transaction['admin_number'] : '');
-        $is_own_transaction = ($transaction_admin === $current_admin_mobile);
-        
-        if ($is_own_transaction) {
-            // Seller can see the price for their own transactions
+        // Check if this transaction is from another branch/store
+        if ($transaction['branch_id'] != $current_branch_id || 
+            ($transaction['sales_center_id'] != $current_sales_center_id && $transaction['branch_id'] == $current_branch_id)) {
+            
+            // For sellers, hide actual amount for transactions from other branches/stores
+            // Just indicate transaction type instead
+            if (isset($transaction['type']) && $transaction['type'] == 'usage') {
+                $result['amount_display'] = 'استفاده از اعتبار';
+                $result['hide_amount'] = true;
+            } else {
+                $result['amount_display'] = 'خرید';
+                $result['hide_amount'] = true;
+            }
+        } else {
+            // Same branch and store, can show real amount
             $result['amount_display'] = (string)$transaction['amount'];
             $result['hide_amount'] = false;
-        } else {
-            // For transactions created by others, show "نامشخص" as price
-            $result['amount_display'] = 'نامشخص';
-            $result['hide_amount'] = true;
         }
     } else {
         // Managers see everything
@@ -193,104 +193,9 @@ function process_transaction_for_display($transaction, $is_manager, $current_bra
     return $result;
 }
 
-// Actions: send_otp, verify_otp, logout, add_subscriber, check_member, use_credit, get_today_report, manage_advisors
+// Actions: send_otp, verify_otp, logout, add_subscriber, check_member, use_credit, get_today_report
 if ($_SERVER['REQUEST_METHOD'] === 'POST'){
     $action = isset($_POST['action']) ? $_POST['action'] : '';
-    
-    // Advisor management actions
-    if ($action === 'get_advisors') {
-        // Admin only
-        if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
-        
-        require_once 'advisor_utils.php';
-        $admin_mobile = $_SESSION['admin_mobile'];
-        
-        if (!can_manage_advisors($admin_mobile)) {
-            echo json_encode(['status'=>'error','message'=>'no_permission']); exit;
-        }
-        
-        $advisors = get_advisors_for_manager($admin_mobile);
-        $all_sales_centers = get_all_sales_centers_for_advisor_management();
-        
-        echo json_encode([
-            'status' => 'success',
-            'advisors' => $advisors,
-            'all_sales_centers' => $all_sales_centers
-        ]); exit;
-        
-    } elseif ($action === 'add_advisor') {
-        // Admin only
-        if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
-        
-        require_once 'advisor_utils.php';
-        $admin_mobile = $_SESSION['admin_mobile'];
-        
-        $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
-        $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : '';
-        $sales_centers = isset($_POST['sales_centers']) ? $_POST['sales_centers'] : [];
-        
-        // Ensure sales_centers is an array and has the proper structure
-        if (!is_array($sales_centers)) {
-            $sales_centers = [];
-        }
-        
-        // Convert sales centers to the expected format with branch_id and sales_center_id
-        $formatted_sales_centers = [];
-        foreach ($sales_centers as $sc_data) {
-            if (is_array($sc_data) && isset($sc_data['branch_id'], $sc_data['sales_center_id'])) {
-                $formatted_sales_centers[] = [
-                    'branch_id' => (int)$sc_data['branch_id'],
-                    'sales_center_id' => (int)$sc_data['sales_center_id']
-                ];
-            }
-        }
-        
-        $result = add_advisor($admin_mobile, $full_name, $mobile_number, $formatted_sales_centers);
-        echo json_encode($result); exit;
-        
-    } elseif ($action === 'remove_advisor') {
-        // Admin only
-        if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
-        
-        require_once 'advisor_utils.php';
-        $admin_mobile = $_SESSION['admin_mobile'];
-        
-        $advisor_id = isset($_POST['advisor_id']) ? (int)$_POST['advisor_id'] : 0;
-        
-        $result = remove_advisor($admin_mobile, $advisor_id);
-        echo json_encode($result); exit;
-        
-    } elseif ($action === 'update_advisor') {
-        // Admin only
-        if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
-        
-        require_once 'advisor_utils.php';
-        $admin_mobile = $_SESSION['admin_mobile'];
-        
-        $advisor_id = isset($_POST['advisor_id']) ? (int)$_POST['advisor_id'] : 0;
-        $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
-        $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : '';
-        $sales_centers = isset($_POST['sales_centers']) ? $_POST['sales_centers'] : [];
-        
-        // Ensure sales_centers is an array and has the proper structure
-        if (!is_array($sales_centers)) {
-            $sales_centers = [];
-        }
-        
-        // Convert sales centers to the expected format with branch_id and sales_center_id
-        $formatted_sales_centers = [];
-        foreach ($sales_centers as $sc_data) {
-            if (is_array($sc_data) && isset($sc_data['branch_id'], $sc_data['sales_center_id'])) {
-                $formatted_sales_centers[] = [
-                    'branch_id' => (int)$sc_data['branch_id'],
-                    'sales_center_id' => (int)$sc_data['sales_center_id']
-                ];
-            }
-        }
-        
-        $result = update_advisor($admin_mobile, $advisor_id, $full_name, $mobile_number, $formatted_sales_centers);
-        echo json_encode($result); exit;
-    }
     if ($action === 'get_today_report') {
         // Admin only
         if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
@@ -317,46 +222,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
             $today_start = $date . ' 00:00:00';
             $today_end = $date . ' 23:59:59';
             
-            // Apply role-based access controls
-            $admin_mobile = $_SESSION['admin_mobile'];
-            $is_manager = is_admin_manager($admin_mobile);
-            $current_branch_id = isset($_SESSION['branch_id']) ? $_SESSION['branch_id'] : 1;
-            $current_sales_center_id = isset($_SESSION['sales_center_id']) ? $_SESSION['sales_center_id'] : 1;
-            
-            // Get today's purchases - FROM ALL BRANCHES (for proper seller visibility rules)
+            // Get today's purchases - FROM ALL BRANCHES
             $purchases = [];
-            
-            // Check if active column exists in purchases table
-            $columnExists = false;
-            try {
-                $checkStmt = $pdo->prepare("SHOW COLUMNS FROM purchases LIKE 'active'");
-                $checkStmt->execute();
-                $columnExists = $checkStmt->rowCount() > 0;
-            } catch (Exception $e) {
-                error_log('Error checking for active column: ' . $e->getMessage());
-                // Continue without filtering by active
-            }
-            
-            // Prepare the SQL to get all transactions
-            if ($columnExists) {
-                $sql = '
-                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id
-                    FROM purchases p
-                    LEFT JOIN subscribers s ON p.subscriber_id = s.id
-                    WHERE p.created_at BETWEEN ? AND ? AND p.active = 1
-                    ORDER BY p.created_at DESC
-                ';
-            } else {
-                $sql = '
-                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id
-                    FROM purchases p
-                    LEFT JOIN subscribers s ON p.subscriber_id = s.id
-                    WHERE p.created_at BETWEEN ? AND ?
-                    ORDER BY p.created_at DESC
-                ';
-            }
-            
-            $stmt = $pdo->prepare($sql);
+            $stmt = $pdo->prepare('
+                SELECT p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id
+                FROM purchases p
+                LEFT JOIN subscribers s ON p.subscriber_id = s.id
+                WHERE p.created_at BETWEEN ? AND ?
+                ORDER BY p.created_at DESC
+            ');
             $stmt->execute([$today_start, $today_end]);
             
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -378,52 +252,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                 }
                 
                 $purchases[] = [
-                    'id' => (int)$row['id'],
                     'mobile' => $row['mobile'],
                     'full_name' => $row['full_name'],
                     'amount' => (int)$row['amount'],
                     'date' => $row['created_at'],
                     'admin' => get_admin_name($row['admin_number']),
-                    'admin_number' => $row['admin_number'],
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
-                    'branch_store' => $branch_store,
-                    'type' => 'purchase'
+                    'branch_store' => $branch_store
                 ];
             }
             
-            // Get today's credit usages - FROM ALL BRANCHES (for proper seller visibility rules)
+            // Get today's credit usages - FROM ALL BRANCHES
             $credits = [];
-            
-            // Check if active column exists in credit_usage table
-            $columnExists = false;
-            try {
-                $checkStmt = $pdo->prepare("SHOW COLUMNS FROM credit_usage LIKE 'active'");
-                $checkStmt->execute();
-                $columnExists = $checkStmt->rowCount() > 0;
-            } catch (Exception $e) {
-                error_log('Error checking for active column: ' . $e->getMessage());
-                // Continue without filtering by active
-            }
-            
-            // Prepare the SQL to get all transactions
-            if ($columnExists) {
-                $sql = '
-                    SELECT id, user_mobile, amount, datetime, is_refund, admin_mobile, branch_id, sales_center_id
-                    FROM credit_usage
-                    WHERE datetime BETWEEN ? AND ? AND active = 1
-                    ORDER BY datetime DESC
-                ';
-            } else {
-                $sql = '
-                    SELECT id, user_mobile, amount, datetime, is_refund, admin_mobile, branch_id, sales_center_id
-                    FROM credit_usage
-                    WHERE datetime BETWEEN ? AND ?
-                    ORDER BY datetime DESC
-                ';
-            }
-            
-            $stmt = $pdo->prepare($sql);
+            $stmt = $pdo->prepare('
+                SELECT user_mobile, amount, datetime, is_refund, admin_mobile, branch_id, sales_center_id
+                FROM credit_usage
+                WHERE datetime BETWEEN ? AND ?
+                ORDER BY datetime DESC
+            ');
             $stmt->execute([$today_start, $today_end]);
             
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -445,30 +292,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                 }
                 
                 $credits[] = [
-                    'id' => (int)$row['id'],
                     'mobile' => $row['user_mobile'],
                     'amount' => (int)$row['amount'],
                     'date' => $row['datetime'],
                     'is_refund' => (bool)$row['is_refund'],
                     'admin' => get_admin_name($row['admin_mobile']),
-                    'admin_mobile' => $row['admin_mobile'],
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
-                    'branch_store' => $branch_store,
-                    'type' => 'credit'
+                    'branch_store' => $branch_store
                 ];
             }
+            
+            // Apply role-based access controls
+            $admin_mobile = $_SESSION['admin_mobile'];
+            $is_manager = is_admin_manager($admin_mobile);
+            $current_branch_id = isset($_SESSION['branch_id']) ? $_SESSION['branch_id'] : 1;
+            $current_sales_center_id = isset($_SESSION['sales_center_id']) ? $_SESSION['sales_center_id'] : 1;
             
             // Process purchases based on admin role
             $processed_purchases = array();
             foreach ($purchases as $p) {
-                $processed_purchases[] = process_transaction_for_display($p, $is_manager, $current_branch_id, $current_sales_center_id, $admin_mobile);
+                $processed_purchases[] = process_transaction_for_display($p, $is_manager, $current_branch_id, $current_sales_center_id);
             }
             
             // Process credits based on admin role
             $processed_credits = array();
             foreach ($credits as $c) {
-                $processed_credits[] = process_transaction_for_display($c, $is_manager, $current_branch_id, $current_sales_center_id, $admin_mobile);
+                $processed_credits[] = process_transaction_for_display($c, $is_manager, $current_branch_id, $current_sales_center_id);
             }
             
             // Calculate totals (use original amounts for accurate totals)
@@ -482,125 +332,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                 $total_credits += $c['amount'];
             }
             
-            // Calculate detailed breakdown by branch and store (for managers only)
-            $breakdown = null;
-            if ($is_manager) {
-                $breakdown = [
-                    'branches' => []
-                ];
-                
-                // Group purchases by branch and sales center
-                $purchase_breakdown = [];
-                foreach ($purchases as $p) {
-                    $branch_id = $p['branch_id'];
-                    $sales_center_id = $p['sales_center_id'];
-                    
-                    if (!isset($purchase_breakdown[$branch_id])) {
-                        $purchase_breakdown[$branch_id] = [];
-                    }
-                    if (!isset($purchase_breakdown[$branch_id][$sales_center_id])) {
-                        $purchase_breakdown[$branch_id][$sales_center_id] = 0;
-                    }
-                    $purchase_breakdown[$branch_id][$sales_center_id] += $p['amount'];
-                }
-                
-                // Group credits by branch and sales center
-                $credit_breakdown = [];
-                foreach ($credits as $c) {
-                    $branch_id = $c['branch_id'];
-                    $sales_center_id = $c['sales_center_id'];
-                    
-                    if (!isset($credit_breakdown[$branch_id])) {
-                        $credit_breakdown[$branch_id] = [];
-                    }
-                    if (!isset($credit_breakdown[$branch_id][$sales_center_id])) {
-                        $credit_breakdown[$branch_id][$sales_center_id] = 0;
-                    }
-                    $credit_breakdown[$branch_id][$sales_center_id] += $c['amount'];
-                }
-                
-                // Combine all branch IDs
-                $all_branch_ids = array_unique(array_merge(
-                    array_keys($purchase_breakdown),
-                    array_keys($credit_breakdown)
-                ));
-                
-                foreach ($all_branch_ids as $branch_id) {
-                    $branch_name = isset($branches[$branch_id]['name']) ? $branches[$branch_id]['name'] : "شعبه $branch_id";
-                    
-                    $branch_data = [
-                        'id' => $branch_id,
-                        'name' => $branch_name,
-                        'total_purchases' => 0,
-                        'total_credits' => 0,
-                        'stores' => []
-                    ];
-                    
-                    // Get all sales center IDs for this branch
-                    $all_sales_center_ids = array_unique(array_merge(
-                        array_keys($purchase_breakdown[$branch_id] ?? []),
-                        array_keys($credit_breakdown[$branch_id] ?? [])
-                    ));
-                    
-                    foreach ($all_sales_center_ids as $sales_center_id) {
-                        $sales_center_name = "";
-                        if (isset($branches[$branch_id]['sales_centers'][$sales_center_id])) {
-                            $sales_center_name = $branches[$branch_id]['sales_centers'][$sales_center_id];
-                        } else if (isset($branches[$branch_id]['sales_centers_labels'][$sales_center_id])) {
-                            $sales_center_name = $branches[$branch_id]['sales_centers_labels'][$sales_center_id];
-                        } else {
-                            $sales_center_name = "فروشگاه $sales_center_id";
-                        }
-                        
-                        $store_purchases = $purchase_breakdown[$branch_id][$sales_center_id] ?? 0;
-                        $store_credits = $credit_breakdown[$branch_id][$sales_center_id] ?? 0;
-                        
-                        $branch_data['stores'][] = [
-                            'id' => $sales_center_id,
-                            'name' => $sales_center_name,
-                            'purchases' => $store_purchases,
-                            'credits' => $store_credits
-                        ];
-                        
-                        $branch_data['total_purchases'] += $store_purchases;
-                        $branch_data['total_credits'] += $store_credits;
-                    }
-                    
-                    $breakdown['branches'][] = $branch_data;
-                }
-            }
-            
             echo json_encode([
                 'status' => 'success',
                 'purchases' => $processed_purchases,
                 'credits' => $processed_credits,
                 'total_purchases' => $total_purchases,
                 'total_credits' => $total_credits,
-                'breakdown' => $breakdown,
                 'date' => $date
             ]);
             exit;
         } catch (Throwable $e) {
-            // Log detailed error information for debugging
             error_log('get_today_report error: ' . $e->getMessage());
-            error_log('Error file: ' . $e->getFile() . ' on line ' . $e->getLine());
-            error_log('Trace: ' . $e->getTraceAsString());
-            
-            // In development environment, return the actual error
-            if (defined('DEBUG_MODE') && DEBUG_MODE) {
-                echo json_encode([
-                    'status' => 'error',
-                    'message' => 'server_error',
-                    'debug' => [
-                        'error' => $e->getMessage(),
-                        'file' => $e->getFile(),
-                        'line' => $e->getLine()
-                    ]
-                ]); 
-            } else {
-                // In production, just return generic error
-                echo json_encode(['status'=>'error','message'=>'server_error']); 
-            }
+            echo json_encode(['status'=>'error','message'=>'server_error']); 
             exit;
         }
     } elseif ($action === 'use_credit') {
@@ -713,11 +456,6 @@ $branch_domain";
         $branches = get_all_branches();
         
         try {
-            // Get admin info for branch filtering
-            $admin_mobile = $_SESSION['admin_mobile'];
-            $is_manager = is_admin_manager($admin_mobile);
-            $current_branch_id = isset($_SESSION['branch_id']) ? $_SESSION['branch_id'] : 1;
-            
             // Check if member exists and get credit (use a single query to get both member info and latest purchases)
             $stmt = $pdo->prepare('SELECT id, credit, branch_id FROM subscribers WHERE mobile = ? LIMIT 1');
             $stmt->execute([$mobile]);
@@ -732,9 +470,9 @@ $branch_domain";
             
             // 1. Get purchases (positive credits) - FROM ALL BRANCHES
             $stmt = $pdo->prepare('
-                SELECT amount, created_at as date, "purchase" as type, branch_id, sales_center_id, admin_number
+                SELECT amount, created_at as date, "purchase" as type, branch_id, sales_center_id
                 FROM purchases 
-                WHERE mobile = ? AND active = 1
+                WHERE mobile = ?
             ');
             $stmt->execute([$mobile]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -761,16 +499,15 @@ $branch_domain";
                     'type' => 'purchase',
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
-                    'branch_store' => $branch_store,
-                    'admin_number' => $row['admin_number']
+                    'branch_store' => $branch_store
                 ];
             }
             
             // 2. Get credit usage (negative credits) - FROM ALL BRANCHES
             $stmt = $pdo->prepare('
-                SELECT amount, datetime as date, is_refund, "usage" as type, branch_id, sales_center_id, admin_mobile
+                SELECT amount, datetime as date, is_refund, "usage" as type, branch_id, sales_center_id
                 FROM credit_usage 
-                WHERE user_mobile = ? AND active = 1
+                WHERE user_mobile = ?
             ');
             $stmt->execute([$mobile]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -798,8 +535,7 @@ $branch_domain";
                     'is_refund' => (bool)$row['is_refund'],
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
-                    'branch_store' => $branch_store,
-                    'admin_mobile' => $row['admin_mobile']
+                    'branch_store' => $branch_store
                 ];
             }
             
@@ -822,7 +558,7 @@ $branch_domain";
             foreach ($transactions as $t) {
                 // Add mobile field to each transaction for masking
                 $t['mobile'] = $mobile;
-                $processed_transactions[] = process_transaction_for_display($t, $is_manager, $current_branch_id, $current_sales_center_id, $admin_mobile);
+                $processed_transactions[] = process_transaction_for_display($t, $is_manager, $current_branch_id, $current_sales_center_id);
             }
             
             echo json_encode([
@@ -860,59 +596,6 @@ $branch_domain";
         // store mobile in session temporary ui marker
         $_SESSION['admin_otp_ui_mobile'] = $mobile; $_SESSION['admin_otp_ui_expires'] = time()+300;
         echo json_encode(['status'=>'success']); exit;
-    } elseif ($action === 'delete_transaction') {
-        // Admin only
-        if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
-        
-        $transaction_id = isset($_POST['transaction_id']) ? (int)$_POST['transaction_id'] : 0;
-        $transaction_type = isset($_POST['transaction_type']) ? $_POST['transaction_type'] : '';
-        
-        if (!$transaction_id || ($transaction_type !== 'purchase' && $transaction_type !== 'credit')) {
-            echo json_encode(['status'=>'error','message'=>'invalid_request']); exit;
-        }
-        
-        // Get admin info
-        $admin_mobile = $_SESSION['admin_mobile'];
-        $is_manager = !empty($_SESSION['is_manager']);
-        
-        try {
-            // Get the transaction details first
-            if ($transaction_type === 'purchase') {
-                $stmt = $pdo->prepare('SELECT id, mobile, amount, created_at as date, admin_number FROM purchases WHERE id = ? LIMIT 1');
-            } else {
-                $stmt = $pdo->prepare('SELECT id, user_mobile as mobile, amount, datetime as date, admin_mobile FROM credit_usage WHERE id = ? LIMIT 1');
-            }
-            
-            $stmt->execute([$transaction_id]);
-            $transaction = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$transaction) {
-                echo json_encode(['status'=>'error','message'=>'transaction_not_found']); exit;
-            }
-            
-            // Include delete_transaction.php for helper functions
-            require_once 'delete_transaction.php';
-            
-            // Check if admin has permission to delete this transaction
-            $permission = checkDeletePermission($transaction, $admin_mobile, $is_manager);
-            
-            if (!$permission['allowed']) {
-                echo json_encode(['status'=>'error','message'=>$permission['message']]); exit;
-            }
-            
-            // Perform the deletion (soft delete)
-            $deleted = deleteTransaction($transaction_id, $transaction_type, $pdo);
-            
-            if (!$deleted) {
-                echo json_encode(['status'=>'error','message'=>'delete_failed']); exit;
-            }
-            
-            echo json_encode(['status'=>'success']); exit;
-            
-        } catch (Throwable $e) {
-            error_log('delete_transaction error: ' . $e->getMessage());
-            echo json_encode(['status'=>'error','message'=>'server_error']); exit;
-        }
     } elseif ($action === 'verify_otp'){
         $mobile = isset($_POST['mobile']) ? norm_digits($_POST['mobile']) : '';
         $code = isset($_POST['otp']) ? trim($_POST['otp']) : '';
@@ -1180,16 +863,6 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
           <div class="btn-icon">📊</div>
           <div class="btn-text">تراکنش های امروز</div>
         </button>
-        <?php 
-        // Show advisor management button only for specific managers
-        require_once 'advisor_utils.php';
-        if (can_manage_advisors($admin_mobile)): 
-        ?>
-        <button id="btn_advisor_management" class="btn-large">
-          <div class="btn-icon">👥</div>
-          <div class="btn-text">مشاور مشتری</div>
-        </button>
-        <?php endif; ?>
       </div>
       
       <!-- Purchase/subscription form (initially hidden) -->
@@ -1240,7 +913,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
         
         <!-- Member info (initially hidden) -->
         <div id="member_info" style="display:none;margin-top:20px;background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">
-          <div id="member_credit" style="background:#d32f2f;color:white;font-weight:bold;font-size:18px;padding:12px 16px;border-radius:8px;text-align:center;width:100%;box-sizing:border-box;margin-bottom:20px;"></div>
+          <div id="member_credit" style="font-size:18px;color:#4caf50;margin-bottom:12px;"></div>
           <h4 style="margin-bottom:10px;">تاریخچه تراکنش‌ها</h4>
           <div id="purchase_history">
             <table style="width:100%;border-collapse:collapse;">
@@ -1317,7 +990,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
         <div id="today_report_msg" class="msg"></div>
         
         <div style="margin-top:20px;">
-          <h4 style="color:#4caf50;margin-bottom:10px;">خریدهای ثبت شده</h4>
+          <h4 style="color:#4caf50;margin-bottom:10px;">خریدهای ثبت شده امروز</h4>
           <div style="background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;margin-bottom:20px;">
             <div id="today_purchases_container" style="max-height:300px;overflow-y:auto;">
               <table style="width:100%;border-collapse:collapse;" id="today_purchases_table">
@@ -1328,7 +1001,6 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                     <th style="text-align:left;padding:8px 4px;">مبلغ (تومان)</th>
                     <th style="text-align:center;padding:8px 4px;">شعبه / فروشگاه</th>
                     <th style="text-align:center;padding:8px 4px;">ادمین</th>
-                    <th style="text-align:center;padding:8px 4px;">عملیات</th>
                   </tr>
                 </thead>
                 <tbody id="today_purchases_list">
@@ -1338,7 +1010,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
             </div>
           </div>
           
-          <h4 style="color:#ff5252;margin-bottom:10px;">اعتبارهای استفاده شده</h4>
+          <h4 style="color:#ff5252;margin-bottom:10px;">اعتبارهای استفاده شده امروز</h4>
           <div style="background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;margin-bottom:20px;">
             <div id="today_credits_container" style="max-height:300px;overflow-y:auto;">
               <table style="width:100%;border-collapse:collapse;" id="today_credits_table">
@@ -1350,7 +1022,6 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                     <th style="text-align:center;padding:8px 4px;">نوع</th>
                     <th style="text-align:center;padding:8px 4px;">شعبه / فروشگاه</th>
                     <th style="text-align:center;padding:8px 4px;">ادمین</th>
-                    <th style="text-align:center;padding:8px 4px;">عملیات</th>
                   </tr>
                 </thead>
                 <tbody id="today_credits_list">
@@ -1360,199 +1031,23 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
             </div>
           </div>
           
-          <!-- Summary section - only visible to managers -->
-          <?php if (!empty($_SESSION['is_manager'])): ?>
-          <div id="transactions_summary" style="margin-top:30px;background:#1a1c1e;padding:20px;border-radius:8px;">
-            <h4 style="margin-bottom:15px;color:#fff;text-align:center;">خلاصه کل (Overall Total)</h4>
-            
-            <!-- Overall totals -->
-            <div style="display:flex;justify-content:space-between;margin-bottom:25px;background:#2a2c2e;padding:15px;border-radius:6px;">
-              <div style="flex:1;">
-                <div style="font-weight:bold;margin-bottom:5px;">مجموع کل خریدها:</div>
-                <div id="manager_total_purchases" style="color:#4caf50;font-size:18px;font-weight:bold;">0 تومان</div>
-              </div>
-              <div style="flex:1;text-align:left;">
-                <div style="font-weight:bold;margin-bottom:5px;">مجموع کل اعتبارهای استفاده شده:</div>
-                <div id="manager_total_credits_used" style="color:#ff5252;font-size:18px;font-weight:bold;">0 تومان</div>
-              </div>
+          <div style="display:flex;justify-content:space-between;margin-top:30px;background:#1a1c1e;padding:15px;border-radius:8px;">
+            <div style="flex:1;">
+              <div style="font-weight:bold;margin-bottom:5px;">مجموع خریدهای امروز:</div>
+              <div id="total_purchases" style="color:#4caf50;font-size:18px;font-weight:bold;">0 تومان</div>
             </div>
-            
-            <!-- Detailed breakdown table -->
-            <div id="breakdown_container" style="margin-top:20px;">
-              <h5 style="margin-bottom:15px;color:#fff;">تفکیک شعب و فروشگاه‌ها</h5>
-              <div style="overflow-x:auto;">
-                <table id="breakdown_table" style="width:100%;border-collapse:collapse;background:#2a2c2e;border-radius:6px;overflow:hidden;">
-                  <thead>
-                    <tr style="background:#333;color:#fff;">
-                      <th style="padding:12px;text-align:right;border-bottom:1px solid #444;">شعبه / فروشگاه</th>
-                      <th style="padding:12px;text-align:center;border-bottom:1px solid #444;color:#4caf50;">خریدها (تومان)</th>
-                      <th style="padding:12px;text-align:center;border-bottom:1px solid #444;color:#ff5252;">اعتبارهای استفاده شده (تومان)</th>
-                    </tr>
-                  </thead>
-                  <tbody id="breakdown_table_body">
-                    <!-- Breakdown data will be inserted here -->
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-          <?php endif; ?>
-        </div>
-      </div>
-      
-      <!-- Advisor Management Form (initially hidden) -->
-      <?php 
-      require_once 'advisor_utils.php';
-      if (can_manage_advisors($admin_mobile)): 
-      ?>
-      <div id="advisor_management_form" style="display:none">
-        <div style="text-align:center;">
-          <h3>مدیریت مشاور مشتری</h3>
-        </div>
-        
-        <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
-          <button id="add_new_advisor" class="btn btn-primary">افزودن مشاور جدید</button>
-          <button id="back_to_menu_advisor" class="btn btn-ghost">بازگشت</button>
-        </div>
-        
-        <div id="advisor_msg" class="msg"></div>
-        
-        <!-- Add/Edit Advisor Form (initially hidden) -->
-        <div id="advisor_form" style="display:none;margin-top:20px;background:rgba(0,0,0,0.3);padding:20px;border-radius:8px;">
-          <h4 id="advisor_form_title">افزودن مشاور جدید</h4>
-          <form id="advisor_form_element">
-            <input type="hidden" id="advisor_id" value="">
-            
-            <div style="margin-bottom:12px;">
-              <label>نام کامل (الزامی)</label>
-              <input type="text" id="advisor_full_name" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="نام و نام خانوادگی مشاور">
-            </div>
-            
-            <div style="margin-bottom:12px;">
-              <label>شماره موبایل (اختیاری)</label>
-              <input type="text" id="advisor_mobile" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="09xxxxxxxxx">
-            </div>
-            
-            <div style="margin-bottom:12px;">
-              <label>انتخاب مراکز فروش</label>
-              <div id="advisor_sales_centers" style="background:#1a1c1e;padding:10px;border-radius:6px;border:1px solid #333;">
-                <!-- Sales centers will be populated here -->
-              </div>
-            </div>
-            
-            <div style="display:flex;gap:8px;margin-top:20px;">
-              <button type="submit" id="save_advisor" class="btn btn-primary">ذخیره</button>
-              <button type="button" id="cancel_advisor_form" class="btn btn-ghost">انصراف</button>
-            </div>
-          </form>
-        </div>
-        
-        <!-- Advisors List -->
-        <div id="advisors_list" style="margin-top:20px;">
-          <h4>فهرست مشاورین</h4>
-          <div id="advisors_container" style="background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">
-            <div id="advisors_table_container">
-              <table style="width:100%;border-collapse:collapse;" id="advisors_table">
-                <thead>
-                  <tr style="border-bottom:1px solid rgba(255,255,255,0.1)">
-                    <th style="text-align:right;padding:8px 4px;">نام کامل</th>
-                    <th style="text-align:center;padding:8px 4px;">موبایل</th>
-                    <th style="text-align:center;padding:8px 4px;">شعبه</th>
-                    <th style="text-align:center;padding:8px 4px;">مراکز فروش</th>
-                    <th style="text-align:center;padding:8px 4px;">عملیات</th>
-                  </tr>
-                </thead>
-                <tbody id="advisors_table_body">
-                  <tr><td colspan="5" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>
-                </tbody>
-              </table>
+            <div style="flex:1;text-align:left;">
+              <div style="font-weight:bold;margin-bottom:5px;">مجموع اعتبارهای استفاده شده:</div>
+              <div id="total_credits_used" style="color:#ff5252;font-size:18px;font-weight:bold;">0 تومان</div>
             </div>
           </div>
         </div>
       </div>
-      <?php endif; ?>
 <?php endif; ?>
     </div>
   </div>
   <script>
-    function postJSON(body){ 
-      return fetch('admin.php', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: new URLSearchParams(body)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok: ' + response.status + ' ' + response.statusText);
-        }
-        return response.json();
-      })
-      .catch(error => {
-        console.error('Error in postJSON:', error);
-        throw error; // Re-throw to be caught by the calling function
-      });
-    }
-    
-    // Function to determine if the current user can delete a transaction
-    function determineDeleteAccess(transaction) {
-      // Manager can delete any transaction
-      if (<?php echo json_encode(!empty($_SESSION['is_manager'])); ?>) {
-        return true;
-      }
-      
-      // Get current admin mobile and branch
-      const currentAdminMobile = <?php echo json_encode($_SESSION['admin_mobile'] ?? ''); ?>;
-      const currentBranchId = <?php echo json_encode($_SESSION['branch_id'] ?? 1); ?>;
-      
-      // Sellers can only delete their own transactions
-      const transactionAdmin = transaction.admin_mobile || transaction.admin_number;
-      const transactionBranchId = transaction.branch_id || 0;
-      
-      // Rule 1: Only show delete button for own transactions (not other sellers in same branch)
-      if (transactionAdmin !== currentAdminMobile) {
-        return false;
-      }
-      
-      // Rule 3: Don't show delete button for transactions from other branches
-      if (transactionBranchId !== currentBranchId) {
-        return false;
-      }
-      
-      // Check time restriction (6 hours) for own transactions
-      const transactionTime = new Date(transaction.date).getTime();
-      const currentTime = new Date().getTime();
-      const hoursPassed = (currentTime - transactionTime) / (1000 * 60 * 60);
-      
-      return hoursPassed <= 6;
-    }
-    
-    // Format time function for displaying transaction times
-    function formatTime(dateStr) {
-      const date = new Date(dateStr);
-      if (isNaN(date.getTime())) return '';
-      
-      let hours = date.getHours();
-      let minutes = date.getMinutes();
-      
-      // Add leading zeros
-      hours = hours < 10 ? '0' + hours : hours;
-      minutes = minutes < 10 ? '0' + minutes : minutes;
-      
-      return hours + ':' + minutes;
-    }
-    
-    // Format date in Gregorian calendar
-    function formatGregorianDate(dateStr) {
-      const date = new Date(dateStr);
-      if (isNaN(date.getTime())) return '';
-      
-      const months = [
-        'January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'
-      ];
-      
-      return date.getDate() + ' ' + months[date.getMonth()] + ' ' + date.getFullYear();
-    }
+    function postJSON(body){ return fetch('admin.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body)}).then(r=>r.json()); }
     
     // Number formatting function - optimized
     function formatWithDots(s){
@@ -1685,295 +1180,6 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       document.getElementById('btn_today_report').parentNode.style.display = 'flex';
     });
     
-    // Advisor management button and functions
-    <?php if (can_manage_advisors($admin_mobile)): ?>
-    document.getElementById('btn_advisor_management').addEventListener('click', function(){
-      document.getElementById('btn_advisor_management').parentNode.style.display = 'none';
-      document.getElementById('advisor_management_form').style.display = 'block';
-      loadAdvisorsData();
-    });
-    
-    document.getElementById('back_to_menu_advisor').addEventListener('click', function(){
-      document.getElementById('advisor_management_form').style.display = 'none';
-      document.getElementById('btn_advisor_management').parentNode.style.display = 'flex';
-      resetAdvisorForm();
-    });
-    
-    document.getElementById('add_new_advisor').addEventListener('click', function(){
-      resetAdvisorForm();
-      document.getElementById('advisor_form_title').textContent = 'افزودن مشاور جدید';
-      document.getElementById('advisor_form').style.display = 'block';
-    });
-    
-    document.getElementById('cancel_advisor_form').addEventListener('click', function(){
-      resetAdvisorForm();
-      document.getElementById('advisor_form').style.display = 'none';
-    });
-    
-    // Advisor form submission
-    document.getElementById('advisor_form_element').addEventListener('submit', function(e){
-      e.preventDefault();
-      
-      const advisorId = document.getElementById('advisor_id').value;
-      const fullName = document.getElementById('advisor_full_name').value.trim();
-      const mobile = document.getElementById('advisor_mobile').value.trim();
-      const msg = document.getElementById('advisor_msg');
-      
-      // Get selected sales centers
-      const salesCenters = [];
-      
-      // Debug: Check the container first
-      const container = document.getElementById('advisor_sales_centers');
-      console.log('Sales centers container:', container);
-      console.log('Container HTML:', container ? container.innerHTML : 'Container not found');
-      
-      const allCheckboxes = document.querySelectorAll('#advisor_sales_centers input[type="checkbox"]');
-      const checkedCheckboxes = document.querySelectorAll('#advisor_sales_centers input[type="checkbox"]:checked');
-      
-      // Debug: Log checkbox selection details
-      console.log('Number of total checkboxes found:', allCheckboxes.length);
-      console.log('Number of checked checkboxes:', checkedCheckboxes.length);
-      
-      // Log all checkboxes and their states
-      allCheckboxes.forEach((cb, index) => {
-        console.log(`Checkbox ${index}:`, {
-          value: cb.value,
-          checked: cb.checked,
-          element: cb
-        });
-      });
-      
-      checkedCheckboxes.forEach(cb => {
-        const value = cb.value;
-        console.log('Processing checked checkbox with value:', value);
-        // Value format is "branchId_salesCenterId"
-        const parts = value.split('_');
-        if (parts.length === 2) {
-          const salesCenter = {
-            branch_id: parseInt(parts[0]),
-            sales_center_id: parseInt(parts[1])
-          };
-          console.log('Adding sales center:', salesCenter);
-          salesCenters.push(salesCenter);
-        } else {
-          console.log('Invalid checkbox value format:', value, 'parts:', parts);
-        }
-      });
-      
-      console.log('Final sales centers array:', salesCenters);
-
-      msg.textContent = '';
-
-      if (!fullName) {
-        msg.textContent = 'نام کامل الزامی است';
-        return;
-      }
-
-      if (salesCenters.length === 0) {
-        msg.textContent = 'حداقل یک مرکز فروش باید انتخاب شود';
-        console.log('No sales centers selected - showing error');
-        return;
-      }      const action = advisorId ? 'update_advisor' : 'add_advisor';
-      const data = {
-        action: action,
-        full_name: fullName,
-        mobile_number: mobile,
-        sales_centers: salesCenters
-      };
-      
-      if (advisorId) {
-        data.advisor_id = advisorId;
-      }
-      
-      msg.textContent = 'در حال پردازش...';
-      
-      postJSON(data).then(json => {
-        if (json.status === 'success') {
-          msg.textContent = json.message;
-          msg.style.color = '#4caf50';
-          resetAdvisorForm();
-          document.getElementById('advisor_form').style.display = 'none';
-          loadAdvisorsData(); // Reload the list
-        } else {
-          msg.textContent = json.message || 'خطا در عملیات';
-          msg.style.color = '#ff5252';
-        }
-      }).catch(error => {
-        console.error('Advisor operation error:', error);
-        msg.textContent = 'خطا در اتصال به سرور';
-        msg.style.color = '#ff5252';
-      });
-    });
-    
-    // Advisor management functions
-    function loadAdvisorsData() {
-      const msg = document.getElementById('advisor_msg');
-      const tableBody = document.getElementById('advisors_table_body');
-      
-      msg.textContent = '';
-      tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>';
-      
-      postJSON({action: 'get_advisors'}).then(json => {
-        if (json.status === 'success') {
-          // Store all sales centers data globally
-          window.allSalesCentersData = json.all_sales_centers;
-          
-          // Populate all sales centers immediately
-          populateAllSalesCenters();
-          
-          // Populate advisors table
-          if (json.advisors && json.advisors.length > 0) {
-            let advisorsHtml = '';
-            json.advisors.forEach(advisor => {
-              const salesCenterNames = advisor.sales_center_names.join(', ') || '-';
-              advisorsHtml += `
-                <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-                  <td style="padding:8px 4px;">${advisor.full_name}</td>
-                  <td style="padding:8px 4px;text-align:center;">${advisor.mobile_number || '-'}</td>
-                  <td style="padding:8px 4px;text-align:center;">${advisor.branch_name}</td>
-                  <td style="padding:8px 4px;text-align:center;">${salesCenterNames}</td>
-                  <td style="padding:8px 4px;text-align:center;">
-                    <button class="btn-edit-advisor" data-id="${advisor.id}" style="background:#2196f3;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;margin-left:4px;">ویرایش</button>
-                    <button class="btn-delete-advisor" data-id="${advisor.id}" style="background:#ff5252;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;">حذف</button>
-                  </td>
-                </tr>
-              `;
-            });
-            tableBody.innerHTML = advisorsHtml;
-            
-            // Add event listeners for edit and delete buttons
-            document.querySelectorAll('.btn-edit-advisor').forEach(btn => {
-              btn.addEventListener('click', function() {
-                editAdvisor(this.dataset.id, json.advisors);
-              });
-            });
-            
-            document.querySelectorAll('.btn-delete-advisor').forEach(btn => {
-              btn.addEventListener('click', function() {
-                deleteAdvisor(this.dataset.id);
-              });
-            });
-          } else {
-            tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;color:#b0b3b8;">هیچ مشاوری ثبت نشده است</td></tr>';
-          }
-        } else {
-          msg.textContent = json.message || 'خطا در دریافت اطلاعات';
-          msg.style.color = '#ff5252';
-          tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
-        }
-      }).catch(error => {
-        console.error('Error loading advisors:', error);
-        msg.textContent = 'خطا در اتصال به سرور';
-        msg.style.color = '#ff5252';
-        tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
-      });
-    }
-    
-    function editAdvisor(advisorId, advisors) {
-      const advisor = advisors.find(a => a.id == advisorId);
-      if (!advisor) return;
-      
-      // Populate form with advisor data
-      document.getElementById('advisor_id').value = advisor.id;
-      document.getElementById('advisor_full_name').value = advisor.full_name;
-      document.getElementById('advisor_mobile').value = advisor.mobile_number || '';
-      
-      // Populate all sales centers and select the ones for this advisor
-      populateAllSalesCenters();
-      
-      // Wait a bit for the sales centers to be populated, then select them
-      setTimeout(() => {
-        advisor.sales_centers.forEach(scInfo => {
-          let checkboxValue;
-          if (typeof scInfo === 'object' && scInfo.branch_id && scInfo.sales_center_id) {
-            // New format
-            checkboxValue = `${scInfo.branch_id}_${scInfo.sales_center_id}`;
-          } else {
-            // Old format - try to find it in the current branch
-            checkboxValue = `${advisor.branch_id}_${scInfo}`;
-          }
-          
-          const checkbox = document.querySelector(`#advisor_sales_centers input[value="${checkboxValue}"]`);
-          if (checkbox) {
-            checkbox.checked = true;
-          }
-        });
-      }, 100);
-      
-      document.getElementById('advisor_form_title').textContent = 'ویرایش مشاور';
-      document.getElementById('advisor_form').style.display = 'block';
-    }
-    
-    function deleteAdvisor(advisorId) {
-      if (!confirm('آیا از حذف این مشاور اطمینان دارید؟')) {
-        return;
-      }
-      
-      const msg = document.getElementById('advisor_msg');
-      msg.textContent = 'در حال حذف...';
-      msg.style.color = '#ffc107';
-      
-      postJSON({
-        action: 'remove_advisor',
-        advisor_id: advisorId
-      }).then(json => {
-        if (json.status === 'success') {
-          msg.textContent = json.message;
-          msg.style.color = '#4caf50';
-          loadAdvisorsData(); // Reload the list
-        } else {
-          msg.textContent = json.message || 'خطا در حذف مشاور';
-          msg.style.color = '#ff5252';
-        }
-      }).catch(error => {
-        console.error('Error deleting advisor:', error);
-        msg.textContent = 'خطا در اتصال به سرور';
-        msg.style.color = '#ff5252';
-      });
-    }
-    
-    function populateAllSalesCenters() {
-      const salesCentersContainer = document.getElementById('advisor_sales_centers');
-      
-      console.log('populateAllSalesCenters called');
-      console.log('allSalesCentersData:', window.allSalesCentersData);
-      
-      if (!window.allSalesCentersData || window.allSalesCentersData.length === 0) {
-        console.log('No sales centers data available');
-        salesCentersContainer.innerHTML = '<p style="color:#888;text-align:center;">مرکز فروشی یافت نشد</p>';
-        return;
-      }
-      
-      let html = '';
-      window.allSalesCentersData.forEach(sc => {
-        const value = `${sc.branch_id}_${sc.sales_center_id}`;
-        console.log('Creating checkbox for:', sc.display_name, 'with value:', value);
-        html += `
-          <div style="margin-bottom:8px;">
-            <label style="display:flex;align-items:center;cursor:pointer;">
-              <input type="checkbox" value="${value}" style="margin-left:8px;">
-              <span>${sc.display_name}</span>
-            </label>
-          </div>
-        `;
-      });
-      
-      salesCentersContainer.innerHTML = html;
-      console.log('Sales centers HTML populated');
-    }
-    
-    function resetAdvisorForm() {
-      document.getElementById('advisor_id').value = '';
-      document.getElementById('advisor_full_name').value = '';
-      document.getElementById('advisor_mobile').value = '';
-      
-      // Populate all sales centers and uncheck all
-      populateAllSalesCenters();
-      
-      document.getElementById('advisor_msg').textContent = '';
-    }
-    <?php endif; ?>
-    
     document.getElementById('refresh_today_report').addEventListener('click', function(){
       loadTodayReport();
     });
@@ -2028,19 +1234,6 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       
       console.log('Go to today clicked. Tehran date:', formattedDate);
       loadTodayReport(formattedDate);
-    });
-    
-    // Handle delete transaction buttons using event delegation
-    document.addEventListener('click', function(event) {
-      // Check if the clicked element is a delete button
-      if (event.target.classList.contains('btn-delete')) {
-        const transactionId = event.target.getAttribute('data-id');
-        const transactionType = event.target.getAttribute('data-type');
-        
-        if (confirm('آیا از حذف این تراکنش اطمینان دارید؟')) {
-          deleteTransaction(transactionId, transactionType);
-        }
-      }
     });
     
     // Handle member inquiry - optimized
@@ -2352,7 +1545,20 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       });
     });
     
-    // Format time function moved to global scope
+    // Format time (HH:MM) from datetime string
+    function formatTime(dateStr) {
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) return '';
+      
+      let hours = date.getHours();
+      let minutes = date.getMinutes();
+      
+      // Add leading zeros
+      hours = hours < 10 ? '0' + hours : hours;
+      minutes = minutes < 10 ? '0' + minutes : minutes;
+      
+      return hours + ':' + minutes;
+    }
     
     // Format persian date (YYYY/MM/DD) from datetime string
     function formatPersianDate(dateStr) {
@@ -2394,29 +1600,16 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     function getTehranDate() {
       try {
         // Use toLocaleString with explicit timezone to get the current date in Tehran
-        // The result is a string, which we parse back to a Date object
-        const tehranDateStr = new Date().toLocaleString('en-US', { timeZone: 'Asia/Tehran' });
-        const tehranDate = new Date(tehranDateStr);
-        console.log('Tehran date:', tehranDate, 'from string:', tehranDateStr);
-        
-        // Validate the date
-        if (isNaN(tehranDate.getTime())) {
-          throw new Error('Invalid date created');
-        }
-        
+        const tehranDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tehran' }));
+        console.log('Tehran date:', tehranDate);
         return tehranDate;
       } catch (e) {
-        console.error('Error in getTehranDate:', e);
         // Fallback to manual offset calculation if toLocaleString with timeZone isn't supported
         console.log('Fallback to manual Tehran time calculation');
-        // Tehran is UTC+3:30 (winter) or UTC+4:30 (summer)
-        // For simplicity, use constant offset of UTC+3:30
-        const tehranOffset = 3.5 * 60; // Tehran is UTC+3:30 (210 minutes)
+        const tehranOffset = 3.5 * 60; // Tehran is UTC+3:30
         const now = new Date();
         const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-        const tehranDate = new Date(utc + (60000 * tehranOffset));
-        console.log('Fallback Tehran date:', tehranDate);
-        return tehranDate;
+        return new Date(utc + (60000 * tehranOffset));
       }
     }
     
@@ -2426,57 +1619,23 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       const creditsList = document.getElementById('today_credits_list');
       const totalPurchases = document.getElementById('total_purchases');
       const totalCreditsUsed = document.getElementById('total_credits_used');
-      const managerTotalPurchases = document.getElementById('manager_total_purchases');
-      const managerTotalCreditsUsed = document.getElementById('manager_total_credits_used');
       const todayDate = document.getElementById('today_date');
       const msg = document.getElementById('today_report_msg');
       
       // If no date provided, use current actual date (today) explicitly with Tehran timezone
       if (!dateString) {
-        try {
-          const today = getTehranDate();
-          today.setHours(0, 0, 0, 0);
-          
-          // Validate the date
-          if (isNaN(today.getTime())) {
-            throw new Error('Invalid Tehran date');
-          }
-          
-          dateString = today.toISOString().split('T')[0];
-          currentReportDate = today;
-          
-          // Debug logging for date calculation
-          console.log('Today in Tehran:', dateString);
-          console.log('Browser local time:', new Date().toISOString().split('T')[0]);
-        } catch (e) {
-          console.error('Error getting Tehran date:', e);
-          // Fallback to browser's local date
-          const fallbackDate = new Date();
-          fallbackDate.setHours(0, 0, 0, 0);
-          dateString = fallbackDate.toISOString().split('T')[0];
-          currentReportDate = fallbackDate;
-          console.log('Using fallback date:', dateString);
-        }
+        const today = getTehranDate();
+        today.setHours(0, 0, 0, 0);
+        dateString = today.toISOString().split('T')[0];
+        currentReportDate = today;
+        
+        // Debug logging for date calculation
+        console.log('Today in Tehran:', dateString);
+        console.log('Browser local time:', new Date().toISOString().split('T')[0]);
       } else {
-        try {
-          // Update current report date
-          currentReportDate = new Date(dateString);
-          
-          // Validate the date
-          if (isNaN(currentReportDate.getTime())) {
-            throw new Error('Invalid date string provided: ' + dateString);
-          }
-          
-          console.log('Using provided date:', dateString);
-        } catch (e) {
-          console.error('Error parsing provided date:', e);
-          // Fallback to today's date
-          const fallbackDate = new Date();
-          fallbackDate.setHours(0, 0, 0, 0);
-          dateString = fallbackDate.toISOString().split('T')[0];
-          currentReportDate = fallbackDate;
-          console.log('Using fallback date after error:', dateString);
-        }
+        // Update current report date
+        currentReportDate = new Date(dateString);
+        console.log('Using provided date:', dateString);
       }
       
       // Reset message
@@ -2522,19 +1681,13 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                   amountDisplay = `<span style="color:#4caf50;">${formatWithDots(purchase.amount)}</span>`;
                 }
                 
-                // Determine if this user can delete this transaction
-                const canDelete = determineDeleteAccess(purchase);
-                
                 purchasesHtml += `
-                  <tr style="border-bottom:1px solid rgba(255,255,255,0.05);" data-id="${purchase.id}" data-type="purchase">
-                    <td style="padding:8px 4px;direction:ltr;">${purchase.mobile}</td>
+                  <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <td style="padding:8px 4px;">${purchase.mobile}</td>
                     <td style="padding:8px 4px;">${formatTime(purchase.date)}</td>
                     <td style="padding:8px 4px;text-align:left;">${amountDisplay}</td>
                     <td style="padding:8px 4px;text-align:center;font-size:0.85em;">${purchase.branch_store || ''}</td>
                     <td style="padding:8px 4px;text-align:center;">${purchase.admin || ''}</td>
-                    <td style="padding:8px 4px;text-align:center;">
-                      ${canDelete ? `<button class="btn-delete" data-id="${purchase.id}" data-type="purchase" style="background:#ff5252;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;">حذف</button>` : ''}
-                    </td>
                   </tr>
                 `;
               });
@@ -2555,12 +1708,9 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                   amountDisplay = `<span style="color:#ff5252;">${formatWithDots(credit.amount)}</span>`;
                 }
                 
-                // Determine if this user can delete this transaction
-                const canDelete = determineDeleteAccess(credit);
-                
                 creditsHtml += `
-                  <tr style="border-bottom:1px solid rgba(255,255,255,0.05);" data-id="${credit.id}" data-type="credit">
-                    <td style="padding:8px 4px;direction:ltr;">${credit.mobile}</td>
+                  <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <td style="padding:8px 4px;">${credit.mobile}</td>
                     <td style="padding:8px 4px;">${formatTime(credit.date)}</td>
                     <td style="padding:8px 4px;text-align:left;">${amountDisplay}</td>
                     <td style="padding:8px 4px;text-align:center;">${credit.is_refund ? 
@@ -2568,9 +1718,6 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                       '<span style="color:#03a9f4;">استفاده</span>'}</td>
                     <td style="padding:8px 4px;text-align:center;font-size:0.85em;">${credit.branch_store || ''}</td>
                     <td style="padding:8px 4px;text-align:center;">${credit.admin || ''}</td>
-                    <td style="padding:8px 4px;text-align:center;">
-                      ${canDelete ? `<button class="btn-delete" data-id="${credit.id}" data-type="credit" style="background:#ff5252;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;">حذف</button>` : ''}
-                    </td>
                   </tr>
                 `;
               });
@@ -2580,149 +1727,20 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
             }
             
             // Update totals
-            if (totalPurchases) {
-              totalPurchases.textContent = formatWithDots(response.total_purchases) + ' تومان';
-            }
-            if (totalCreditsUsed) {
-              totalCreditsUsed.textContent = formatWithDots(response.total_credits) + ' تومان';
-            }
-            if (managerTotalPurchases) {
-              managerTotalPurchases.textContent = formatWithDots(response.total_purchases) + ' تومان';
-            }
-            if (managerTotalCreditsUsed) {
-              managerTotalCreditsUsed.textContent = formatWithDots(response.total_credits) + ' تومان';
-            }
-            
-            // Update breakdown table (for managers only)
-            if (response.breakdown && response.breakdown.branches) {
-              const breakdownTableBody = document.getElementById('breakdown_table_body');
-              if (breakdownTableBody) {
-                let breakdownHtml = '';
-                
-                if (response.breakdown.branches.length === 0) {
-                  breakdownHtml = `
-                    <tr>
-                      <td colspan="3" style="padding:15px;text-align:center;color:#888;">هیچ تراکنشی یافت نشد</td>
-                    </tr>
-                  `;
-                } else {
-                  response.breakdown.branches.forEach(function(branch) {
-                    // Add branch header row
-                    breakdownHtml += `
-                      <tr style="background:#3a3c3e;border-bottom:1px solid #444;">
-                        <td style="padding:10px;font-weight:bold;color:#fff;">${branch.name}</td>
-                        <td style="padding:10px;text-align:center;color:#4caf50;font-weight:bold;">${formatWithDots(branch.total_purchases)}</td>
-                        <td style="padding:10px;text-align:center;color:#ff5252;font-weight:bold;">${formatWithDots(branch.total_credits)}</td>
-                      </tr>
-                    `;
-                    
-                    // Add store rows if there are multiple stores
-                    if (branch.stores && branch.stores.length > 1) {
-                      branch.stores.forEach(function(store) {
-                        breakdownHtml += `
-                          <tr style="background:#2a2c2e;border-bottom:1px solid #444;">
-                            <td style="padding:8px 20px;color:#ccc;font-size:0.9em;">├─ ${store.name}</td>
-                            <td style="padding:8px;text-align:center;color:#4caf50;">${formatWithDots(store.purchases)}</td>
-                            <td style="padding:8px;text-align:center;color:#ff5252;">${formatWithDots(store.credits)}</td>
-                          </tr>
-                        `;
-                      });
-                    } else if (branch.stores && branch.stores.length === 1) {
-                      // If only one store, show it as a sub-item for clarity
-                      const store = branch.stores[0];
-                      if (store.name !== branch.name && store.name !== '-') {
-                        breakdownHtml += `
-                          <tr style="background:#2a2c2e;border-bottom:1px solid #444;">
-                            <td style="padding:8px 20px;color:#ccc;font-size:0.9em;">├─ ${store.name}</td>
-                            <td style="padding:8px;text-align:center;color:#4caf50;">${formatWithDots(store.purchases)}</td>
-                            <td style="padding:8px;text-align:center;color:#ff5252;">${formatWithDots(store.credits)}</td>
-                          </tr>
-                        `;
-                      }
-                    }
-                  });
-                }
-                
-                breakdownTableBody.innerHTML = breakdownHtml;
-              }
-            }
+            totalPurchases.textContent = formatWithDots(response.total_purchases) + ' تومان';
+            totalCreditsUsed.textContent = formatWithDots(response.total_credits) + ' تومان';
           } else {
-            let errorMsg = response.message || 'خطا در دریافت اطلاعات';
-            msg.textContent = errorMsg;
-            console.error('API error response:', response);
-            
-            // Show more detailed error in the UI if debug info is available
-            if (response.debug) {
-              console.error('Debug info:', response.debug);
-              purchasesList.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری: ${errorMsg}</td></tr>`;
-              creditsList.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری: ${errorMsg}</td></tr>`;
-            } else {
-              purchasesList.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
-              creditsList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
-            }
+            msg.textContent = response.message || 'خطا در دریافت اطلاعات';
+            purchasesList.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
+            creditsList.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
           }
         })
         .catch(function(error) {
           console.error('Error loading today report:', error);
           msg.textContent = 'خطا در اتصال به سرور';
-          purchasesList.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
-          creditsList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
+          purchasesList.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
+          creditsList.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
         });
-    }
-    
-    // Function to delete a transaction
-    function deleteTransaction(transactionId, transactionType) {
-      // Show loading state
-      const button = document.querySelector(`.btn-delete[data-id="${transactionId}"][data-type="${transactionType}"]`);
-      const originalText = button.textContent;
-      button.textContent = '...';
-      button.disabled = true;
-      
-      // API call to delete transaction
-      postJSON({
-        action: 'delete_transaction',
-        transaction_id: transactionId,
-        transaction_type: transactionType
-      })
-        .then(function(response) {
-          if (response.status === 'success') {
-            // Success - reload the current report to update the list
-            showNotification('تراکنش با موفقیت حذف شد', 'success');
-            // Reload the current report with the same date
-            loadTodayReport(currentReportDate.toISOString().split('T')[0]);
-          } else {
-            // Error - show message and restore button
-            showNotification(response.message || 'خطا در حذف تراکنش', 'error');
-            button.textContent = originalText;
-            button.disabled = false;
-          }
-        })
-        .catch(function(error) {
-          console.error('Error deleting transaction:', error);
-          showNotification('خطا در اتصال به سرور', 'error');
-          button.textContent = originalText;
-          button.disabled = false;
-        });
-    }
-    
-    // Helper function to show notifications
-    function showNotification(message, type = 'info') {
-      const msg = document.getElementById('today_report_msg');
-      msg.textContent = message;
-      
-      // Set color based on type
-      if (type === 'success') {
-        msg.style.color = '#4caf50';
-      } else if (type === 'error') {
-        msg.style.color = '#ff5252';
-      } else {
-        msg.style.color = '#03a9f4';
-      }
-      
-      // Clear message after 5 seconds
-      setTimeout(function() {
-        msg.textContent = '';
-      }, 5000);
     }
     <?php endif; ?>
   </script>

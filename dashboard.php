@@ -12,6 +12,40 @@ if (!$user) {
   session_destroy();
   header('Location: index.php'); exit;
 }
+
+// Get purchase count
+try {
+  $purchase_count_stmt = $pdo->prepare("SELECT COUNT(*) as purchase_count FROM purchases WHERE subscriber_id=? AND active=1");
+  $purchase_count_stmt->execute([$user_id]);
+  $purchase_count = $purchase_count_stmt->fetch()['purchase_count'];
+} catch (Exception $e) {
+  // Fallback if active column doesn't exist
+  try {
+    $purchase_count_stmt = $pdo->prepare("SELECT COUNT(*) as purchase_count FROM purchases WHERE subscriber_id=?");
+    $purchase_count_stmt->execute([$user_id]);
+    $purchase_count = $purchase_count_stmt->fetch()['purchase_count'];
+  } catch (Exception $e2) {
+    $purchase_count = 0;
+  }
+}
+
+// Get total used credit
+try {
+  $used_credit_stmt = $pdo->prepare("SELECT SUM(amount) as total_used FROM credit_usage WHERE user_mobile=? AND active=1");
+  $used_credit_stmt->execute([$user['mobile']]);
+  $used_credit_result = $used_credit_stmt->fetch();
+  $total_used_credit = $used_credit_result['total_used'] ? abs($used_credit_result['total_used']) : 0;
+} catch (Exception $e) {
+  // Fallback if active column doesn't exist
+  try {
+    $used_credit_stmt = $pdo->prepare("SELECT SUM(amount) as total_used FROM credit_usage WHERE user_mobile=?");
+    $used_credit_stmt->execute([$user['mobile']]);
+    $used_credit_result = $used_credit_stmt->fetch();
+    $total_used_credit = $used_credit_result['total_used'] ? abs($used_credit_result['total_used']) : 0;
+  } catch (Exception $e2) {
+    $total_used_credit = 0;
+  }
+}
 ?>
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -34,16 +68,35 @@ if (!$user) {
           </form>
         </div>
         <div style="color:#b0b3b8; margin-bottom:8px; display:flex; align-items:center; justify-content:center; gap:10px">موبایل: <?php echo htmlspecialchars($user['mobile']); ?></div>
-        <div class="credit" id="credit">اعتبار شما: <?php echo number_format(intval($user['credit'] * 5000)); ?> تومان</div>
+        
+        <!-- Credit display - prominent and centered -->
+        <div class="credit" id="credit" style="text-align:center; margin-bottom:20px;">اعتبار شما: <?php echo number_format(intval($user['credit'] * 5000)); ?> تومان</div>
+        
+        <!-- New data fields in table-style layout -->
+        <div style="display:flex; justify-content:center; margin-bottom:20px;">
+          <table style="border-collapse: collapse; background:#1a1c1e; border-radius:8px; overflow:hidden; width:280px;">
+            <tr>
+              <td style="padding:12px 15px; text-align:center; border-left:1px solid #2a2d30; width:50%;">
+                <div style="font-size:0.9em; color:#b0b3b8; margin-bottom:5px;">تعداد خریدها</div>
+                <div style="font-size:1.1em; font-weight:bold; color:#4caf50;"><?php echo number_format($purchase_count); ?></div>
+              </td>
+              <td style="padding:12px 15px; text-align:center; width:50%;">
+                <div style="font-size:0.9em; color:#b0b3b8; margin-bottom:5px;">اعتبار استفاده شده</div>
+                <div style="font-size:1.1em; font-weight:bold; color:#ff5252;"><?php echo number_format($total_used_credit); ?> تومان</div>
+              </td>
+            </tr>
+          </table>
+        </div>
+        
         <div style="display:flex;flex-direction:column;gap:10px;align-items:center;margin-top:8px;">
-          <div id="profile-toggle" class="profile-box complete-btn" tabindex="0" style="width:220px;text-align:center;">تکمیل پروفایل</div>
-          <button id="purchases-btn" class="small-btn" style="width:220px;text-align:center;">تراکنش‌ها</button>
+          <button id="profile-toggle" class="dashboard-btn" tabindex="0" style="width:220px;text-align:center;background:#ffb300;color:#181a1b;border:none;border-radius:8px;padding:12px;font-size:1rem;font-weight:600;cursor:pointer;transition:background 0.2s;">تکمیل پروفایل</button>
+          <button id="purchases-btn" class="dashboard-btn" style="width:220px;text-align:center;background:#ffb300;color:#181a1b;border:none;border-radius:8px;padding:12px;font-size:1rem;font-weight:600;cursor:pointer;transition:background 0.2s;">تراکنش‌ها</button>
         </div>
       </div>
 
       <!-- Profile edit view (hidden by default) -->
       <div id="profile-view" style="display:none; margin-top:12px;">
-        <form id="profile-form" class="profile-form" method="post">
+        <form id="profile-form" class="profile-form" method="post" style="display:block;">
           <input type="hidden" name="mobile" value="<?php echo htmlspecialchars($user['mobile']); ?>">
           <input type="text" name="full_name" placeholder="نام و نام خانوادگی" value="<?php echo htmlspecialchars($user['full_name'] ?? ''); ?>">
           <input type="email" name="email" placeholder="ایمیل (اختیاری)" value="<?php echo htmlspecialchars($user['email'] ?? ''); ?>">
@@ -142,6 +195,21 @@ if (!$user) {
 
       // initialize hidden from input if value exists
       input.dispatchEvent(new Event('change'));
+
+      // Add hover effects for dashboard buttons
+      function addButtonHover(buttonId) {
+        var button = document.getElementById(buttonId);
+        if (button) {
+          button.addEventListener('mouseenter', function() {
+            button.style.background = '#ffd54f';
+          });
+          button.addEventListener('mouseleave', function() {
+            button.style.background = '#ffb300';
+          });
+        }
+      }
+      addButtonHover('profile-toggle');
+      addButtonHover('purchases-btn');
 
       // view toggles and purchases loading
       var purchasesBtn = document.getElementById('purchases-btn');

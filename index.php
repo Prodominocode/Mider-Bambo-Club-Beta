@@ -13,8 +13,8 @@
   <div class="overlay"></div>
   <div class="centered-container">
     <img src="assets/images/logo.png" alt="Logo" class="logo">
-    <div class="subtitle">باشگاه مشتریان - MIDER</div>
-    <div class="description">به باشگاه مشتریان پوشاک آقایان و بانوان میدر خوش آمدید. با عضویت در باشگاه 10 امتیاز دریافت کنید</div>
+    <div class="subtitle">باشگاه مشتریان - Bambo</div>
+    <div class="description">به باشگاه مشتریان پوشاک آقایان و بانوان میدر خوش آمدید.</div>
     <div class="form-box fade">
       <form id="newsletter-form">
         <div class="form-title">ورود / عضویت در باشگاه</div>

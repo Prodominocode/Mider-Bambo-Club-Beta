@@ -4,6 +4,7 @@ session_start();
 header('Content-Type: application/json; charset=utf-8');
 require_once 'db.php';
 require_once 'config.php';
+require_once 'branch_utils.php';
 
 // Debug session info (remove in production)
 // error_log("Session data: " . print_r($_SESSION, true));
@@ -40,39 +41,46 @@ if (empty($mobile) && $uid > 0) {
 }
 
 try {
+    // Get current branch ID
+    $branch_id = get_current_branch();
+    
     // Get combined transaction history (purchases and credit usage)
     $transactions = [];
     
-    // 1. Get purchases (positive credits)
+    // 1. Get purchases (positive credits) - filter by branch and active status
     $stmt = $pdo->prepare('
-        SELECT amount, created_at as date, "purchase" as type 
+        SELECT amount, created_at as date, "purchase" as type, branch_id, sales_center_id 
         FROM purchases 
-        WHERE subscriber_id = ? OR mobile = ?
+        WHERE (subscriber_id = ? OR mobile = ?) AND branch_id = ? AND active = 1
     ');
-    $stmt->execute([$uid, $mobile]);
+    $stmt->execute([$uid, $mobile, $branch_id]);
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $transactions[] = [
             'amount' => (int)$row['amount'],
             'date' => $row['date'],
             'type' => 'purchase',
-            'is_refund' => false
+            'is_refund' => false,
+            'branch_id' => (int)$row['branch_id'],
+            'sales_center_id' => (int)$row['sales_center_id']
         ];
     }
     
     // 2. Get credit usage (negative credits) if mobile is available
     if ($mobile) {
         $stmt = $pdo->prepare('
-            SELECT amount, datetime as date, is_refund, "usage" as type 
+            SELECT amount, datetime as date, is_refund, "usage" as type, branch_id, sales_center_id
             FROM credit_usage 
-            WHERE user_mobile = ?
+            WHERE user_mobile = ? AND branch_id = ? AND active = 1
         ');
-        $stmt->execute([$mobile]);
+        $stmt->execute([$mobile, $branch_id]);
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             $transactions[] = [
                 'amount' => -(int)$row['amount'], // Negative amount
                 'date' => $row['date'],
                 'type' => 'usage',
-                'is_refund' => (bool)$row['is_refund']
+                'is_refund' => (bool)$row['is_refund'],
+                'branch_id' => (int)$row['branch_id'],
+                'sales_center_id' => (int)$row['sales_center_id']
             ];
         }
     }

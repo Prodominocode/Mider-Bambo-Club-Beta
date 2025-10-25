@@ -35,6 +35,15 @@ if ($full_name) {
 $stmt = $pdo->prepare("UPDATE subscribers SET verified=1, full_name=? WHERE mobile=?");
 $stmt->execute([$newName, $mobile]);
 
+// Get current branch ID for this login session
+require_once 'config.php';
+require_once 'branch_utils.php';
+$current_branch_id = get_current_branch();
+
+// Update user's branch_id to the current branch they're logging in from
+$stmt = $pdo->prepare("UPDATE subscribers SET branch_id = ? WHERE mobile = ?");
+$stmt->execute([$current_branch_id, $mobile]);
+
 // Fetch user id for session
 $stmt = $pdo->prepare("SELECT * FROM subscribers WHERE mobile=?");
 $stmt->execute([$mobile]);
@@ -43,11 +52,18 @@ if ($user) {
     $_SESSION['user_id'] = $user['id'];
     $_SESSION['full_name'] = $user['full_name'];
     $_SESSION['mobile'] = $user['mobile'];
+    $_SESSION['branch_id'] = $current_branch_id;
+            
             // Send welcome SMS via Kavenegar
-            require_once 'config.php';
+            // Use the current branch for messaging, not the stored one
+            $branch_id = $current_branch_id;
+            $message_label = get_branch_message_label($branch_id);
+            
             $api_key = KAVENEGAR_API_KEY;
             $receptor = $mobile;
-            $message = "پوشاک میدر\nبه باشگاه مشتریان فروشگاه خوش آمدید.\nشعبه ساری\nmiderclub.ir";
+            // Get the branch domain - explicitly using the current branch ID
+            $branch_domain = get_branch_domain($current_branch_id);
+            $message = "$message_label\nبه باشگاه مشتریان فروشگاه خوش آمدید.\n$branch_domain";
             $url = "https://api.kavenegar.com/v1/$api_key/sms/send.json";
             $postfields = http_build_query([
                 'receptor' => $receptor,
