@@ -79,10 +79,10 @@ function is_admin_authorized($action, $session = null) {
         // Actions available to all admin roles (manager, seller)
         case 'add_purchase':
         case 'check_member':
+        case 'get_today_report':
             return true;
             
         // Actions available only to managers
-        case 'get_today_report':
         case 'use_credit': 
             return false;
             
@@ -170,7 +170,7 @@ function process_transaction_for_display($transaction, $is_manager, $current_bra
             $result['mobile'] = mask_mobile_for_seller($transaction['mobile']);
         }
         
-        // Determine transaction ownership
+        // Determine transaction ownership for sellers
         $transaction_admin = isset($transaction['admin_mobile']) ? $transaction['admin_mobile'] : 
                            (isset($transaction['admin_number']) ? $transaction['admin_number'] : '');
         $is_own_transaction = ($transaction_admin === $current_admin_mobile);
@@ -209,13 +209,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
             echo json_encode(['status'=>'error','message'=>'no_permission']); exit;
         }
         
-        $advisors = get_advisors_for_manager($admin_mobile);
+        // Use shared advisor list instead of manager-specific
+        $advisors = get_all_advisors_shared($admin_mobile);
         $all_sales_centers = get_all_sales_centers_for_advisor_management();
         
         echo json_encode([
             'status' => 'success',
             'advisors' => $advisors,
             'all_sales_centers' => $all_sales_centers
+        ]); exit;
+        
+    } elseif ($action === 'get_advisors_for_purchase') {
+        // Admin only - Get advisors for purchase form
+        if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+        
+        require_once 'advisor_utils.php';
+        
+        $branch_id = isset($_POST['branch_id']) ? (int)$_POST['branch_id'] : 0;
+        $sales_center_id = isset($_POST['sales_center_id']) ? (int)$_POST['sales_center_id'] : 0;
+        
+        if (!$branch_id || !$sales_center_id) {
+            echo json_encode(['status'=>'error','message'=>'missing_parameters']); exit;
+        }
+        
+        $advisors = get_advisors_for_branch_and_sales_center($branch_id, $sales_center_id);
+        
+        echo json_encode([
+            'status' => 'success',
+            'advisors' => $advisors
         ]); exit;
         
     } elseif ($action === 'add_advisor') {
@@ -227,25 +248,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
         
         $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
         $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : '';
-        $sales_centers = isset($_POST['sales_centers']) ? $_POST['sales_centers'] : [];
         
-        // Ensure sales_centers is an array and has the proper structure
-        if (!is_array($sales_centers)) {
-            $sales_centers = [];
-        }
-        
-        // Convert sales centers to the expected format with branch_id and sales_center_id
-        $formatted_sales_centers = [];
-        foreach ($sales_centers as $sc_data) {
-            if (is_array($sc_data) && isset($sc_data['branch_id'], $sc_data['sales_center_id'])) {
-                $formatted_sales_centers[] = [
-                    'branch_id' => (int)$sc_data['branch_id'],
-                    'sales_center_id' => (int)$sc_data['sales_center_id']
-                ];
+        // Parse sales_centers from the new URL-encoded format
+        $sales_centers = [];
+        if (isset($_POST['sales_centers']) && is_array($_POST['sales_centers'])) {
+            foreach ($_POST['sales_centers'] as $sc_data) {
+                if (is_array($sc_data) && isset($sc_data['branch_id'], $sc_data['sales_center_id'])) {
+                    $sales_centers[] = [
+                        'branch_id' => (int)$sc_data['branch_id'],
+                        'sales_center_id' => (int)$sc_data['sales_center_id']
+                    ];
+                }
             }
         }
         
-        $result = add_advisor($admin_mobile, $full_name, $mobile_number, $formatted_sales_centers);
+        // Debug logging for add_advisor
+        error_log('Add advisor - Received sales_centers: ' . print_r($_POST['sales_centers'] ?? 'not set', true));
+        error_log('Add advisor - Parsed sales_centers: ' . print_r($sales_centers, true));
+        
+        // Ensure we have valid sales centers
+        if (empty($sales_centers)) {
+            echo json_encode(['status' => 'error', 'message' => 'حداقل یک مرکز فروش باید انتخاب شود']);
+            exit;
+        }
+        
+        $result = add_advisor_shared($admin_mobile, $full_name, $mobile_number, $sales_centers);
         echo json_encode($result); exit;
         
     } elseif ($action === 'remove_advisor') {
@@ -257,7 +284,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
         
         $advisor_id = isset($_POST['advisor_id']) ? (int)$_POST['advisor_id'] : 0;
         
-        $result = remove_advisor($admin_mobile, $advisor_id);
+        $result = remove_advisor_shared($admin_mobile, $advisor_id);
         echo json_encode($result); exit;
         
     } elseif ($action === 'update_advisor') {
@@ -270,25 +297,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
         $advisor_id = isset($_POST['advisor_id']) ? (int)$_POST['advisor_id'] : 0;
         $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
         $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : '';
-        $sales_centers = isset($_POST['sales_centers']) ? $_POST['sales_centers'] : [];
         
-        // Ensure sales_centers is an array and has the proper structure
-        if (!is_array($sales_centers)) {
-            $sales_centers = [];
-        }
-        
-        // Convert sales centers to the expected format with branch_id and sales_center_id
-        $formatted_sales_centers = [];
-        foreach ($sales_centers as $sc_data) {
-            if (is_array($sc_data) && isset($sc_data['branch_id'], $sc_data['sales_center_id'])) {
-                $formatted_sales_centers[] = [
-                    'branch_id' => (int)$sc_data['branch_id'],
-                    'sales_center_id' => (int)$sc_data['sales_center_id']
-                ];
+        // Parse sales_centers from the new URL-encoded format
+        $sales_centers = [];
+        if (isset($_POST['sales_centers']) && is_array($_POST['sales_centers'])) {
+            foreach ($_POST['sales_centers'] as $sc_data) {
+                if (is_array($sc_data) && isset($sc_data['branch_id'], $sc_data['sales_center_id'])) {
+                    $sales_centers[] = [
+                        'branch_id' => (int)$sc_data['branch_id'],
+                        'sales_center_id' => (int)$sc_data['sales_center_id']
+                    ];
+                }
             }
         }
         
-        $result = update_advisor($admin_mobile, $advisor_id, $full_name, $mobile_number, $formatted_sales_centers);
+        // Debug logging for update_advisor
+        error_log('Update advisor - Received sales_centers: ' . print_r($_POST['sales_centers'] ?? 'not set', true));
+        error_log('Update advisor - Parsed sales_centers: ' . print_r($sales_centers, true));
+        
+        // Ensure we have valid sales centers
+        if (empty($sales_centers)) {
+            echo json_encode(['status' => 'error', 'message' => 'حداقل یک مرکز فروش باید انتخاب شود']);
+            exit;
+        }
+        
+        $result = update_advisor_shared($admin_mobile, $advisor_id, $full_name, $mobile_number, $sales_centers);
         echo json_encode($result); exit;
     }
     if ($action === 'get_today_report') {
@@ -337,20 +370,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                 // Continue without filtering by active
             }
             
-            // Prepare the SQL to get all transactions
+            // Prepare the SQL to get all transactions with advisor information
             if ($columnExists) {
                 $sql = '
-                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id
+                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id, p.advisor_id,
+                           a.full_name as advisor_name
                     FROM purchases p
                     LEFT JOIN subscribers s ON p.subscriber_id = s.id
+                    LEFT JOIN advisors a ON p.advisor_id = a.id
                     WHERE p.created_at BETWEEN ? AND ? AND p.active = 1
                     ORDER BY p.created_at DESC
                 ';
             } else {
                 $sql = '
-                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id
+                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id, p.advisor_id,
+                           a.full_name as advisor_name
                     FROM purchases p
                     LEFT JOIN subscribers s ON p.subscriber_id = s.id
+                    LEFT JOIN advisors a ON p.advisor_id = a.id
                     WHERE p.created_at BETWEEN ? AND ?
                     ORDER BY p.created_at DESC
                 ';
@@ -388,6 +425,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
                     'branch_store' => $branch_store,
+                    'advisor_id' => $row['advisor_id'] ? (int)$row['advisor_id'] : null,
+                    'advisor_name' => $row['advisor_name'] ?: null,
                     'type' => 'purchase'
                 ];
             }
@@ -406,20 +445,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                 // Continue without filtering by active
             }
             
-            // Prepare the SQL to get all transactions
+            // Prepare the SQL to get all transactions with advisor information
             if ($columnExists) {
                 $sql = '
-                    SELECT id, user_mobile, amount, datetime, is_refund, admin_mobile, branch_id, sales_center_id
-                    FROM credit_usage
-                    WHERE datetime BETWEEN ? AND ? AND active = 1
-                    ORDER BY datetime DESC
+                    SELECT c.id, c.user_mobile, c.amount, c.datetime, c.is_refund, c.admin_mobile, c.branch_id, c.sales_center_id, c.advisor_id,
+                           a.full_name as advisor_name
+                    FROM credit_usage c
+                    LEFT JOIN advisors a ON c.advisor_id = a.id
+                    WHERE c.datetime BETWEEN ? AND ? AND c.active = 1
+                    ORDER BY c.datetime DESC
                 ';
             } else {
                 $sql = '
-                    SELECT id, user_mobile, amount, datetime, is_refund, admin_mobile, branch_id, sales_center_id
-                    FROM credit_usage
-                    WHERE datetime BETWEEN ? AND ?
-                    ORDER BY datetime DESC
+                    SELECT c.id, c.user_mobile, c.amount, c.datetime, c.is_refund, c.admin_mobile, c.branch_id, c.sales_center_id, c.advisor_id,
+                           a.full_name as advisor_name
+                    FROM credit_usage c
+                    LEFT JOIN advisors a ON c.advisor_id = a.id
+                    WHERE c.datetime BETWEEN ? AND ?
+                    ORDER BY c.datetime DESC
                 ';
             }
             
@@ -455,6 +498,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
                     'branch_store' => $branch_store,
+                    'advisor_id' => $row['advisor_id'] ? (int)$row['advisor_id'] : null,
+                    'advisor_name' => $row['advisor_name'] ?: null,
                     'type' => 'credit'
                 ];
             }
@@ -623,6 +668,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
             $sales_center_id = isset($_SESSION['sales_center_id']) ? $_SESSION['sales_center_id'] : 1;
         }
         
+        // Find appropriate advisor for this credit usage transaction
+        require_once 'advisor_utils.php';
+        $advisor_id = find_advisor_for_transaction($branch_id, $sales_center_id, $admin);
+        
         if (!$mobile) { echo json_encode(['status'=>'error','message'=>'mobile_required']); exit; }
         if (!$amount) { echo json_encode(['status'=>'error','message'=>'amount_required']); exit; }
         
@@ -652,9 +701,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
             $upd->execute([$creditToSubtract, $member['id']]);
             
             // 2. Insert record into credit_usage table
-            $ins = $pdo->prepare('INSERT INTO credit_usage (amount, credit_value, is_refund, user_mobile, admin_mobile, branch_id, sales_center_id) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?)');
-            $ins->execute([$amount, $creditToSubtract, $is_refund ? 1 : 0, $mobile, $admin, $branch_id, $sales_center_id]);
+            $ins = $pdo->prepare('INSERT INTO credit_usage (amount, credit_value, is_refund, user_mobile, admin_mobile, branch_id, sales_center_id, advisor_id) 
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+            $ins->execute([$amount, $creditToSubtract, $is_refund ? 1 : 0, $mobile, $admin, $branch_id, $sales_center_id, $advisor_id]);
             
             // 3. Get updated credit
             $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1');
@@ -713,12 +762,7 @@ $branch_domain";
         $branches = get_all_branches();
         
         try {
-            // Get admin info for branch filtering
-            $admin_mobile = $_SESSION['admin_mobile'];
-            $is_manager = is_admin_manager($admin_mobile);
-            $current_branch_id = isset($_SESSION['branch_id']) ? $_SESSION['branch_id'] : 1;
-            
-            // Check if member exists and get credit (use a single query to get both member info and latest purchases)
+            // Check if member exists and get credit
             $stmt = $pdo->prepare('SELECT id, credit, branch_id FROM subscribers WHERE mobile = ? LIMIT 1');
             $stmt->execute([$mobile]);
             $member = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -727,14 +771,15 @@ $branch_domain";
                 echo json_encode(['status'=>'error','message'=>'not_a_member']); exit;
             }
             
-            // Get combined purchase history and credit usage - limit to recent 20 records for better performance
+            // Get ALL purchase history and credit usage - NO LIMITS, from ALL BRANCHES
             $transactions = [];
             
-            // 1. Get purchases (positive credits) - FROM ALL BRANCHES
+            // 1. Get ALL purchases (positive credits) - FROM ALL BRANCHES
             $stmt = $pdo->prepare('
                 SELECT amount, created_at as date, "purchase" as type, branch_id, sales_center_id, admin_number
                 FROM purchases 
                 WHERE mobile = ? AND active = 1
+                ORDER BY created_at DESC
             ');
             $stmt->execute([$mobile]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -762,15 +807,20 @@ $branch_domain";
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
                     'branch_store' => $branch_store,
-                    'admin_number' => $row['admin_number']
+                    'admin_number' => $row['admin_number'],
+                    'mobile' => $mobile,
+                    // For inquiry: always show full prices without restrictions for all admin types
+                    'amount_display' => (string)$row['amount'],
+                    'hide_amount' => false
                 ];
             }
             
-            // 2. Get credit usage (negative credits) - FROM ALL BRANCHES
+            // 2. Get ALL credit usage (negative credits) - FROM ALL BRANCHES  
             $stmt = $pdo->prepare('
                 SELECT amount, datetime as date, is_refund, "usage" as type, branch_id, sales_center_id, admin_mobile
                 FROM credit_usage 
                 WHERE user_mobile = ? AND active = 1
+                ORDER BY datetime DESC
             ');
             $stmt->execute([$mobile]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -799,7 +849,11 @@ $branch_domain";
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
                     'branch_store' => $branch_store,
-                    'admin_mobile' => $row['admin_mobile']
+                    'admin_mobile' => $row['admin_mobile'],
+                    'mobile' => $mobile,
+                    // For inquiry: always show full prices without restrictions for all admin types
+                    'amount_display' => (string)$row['amount'],
+                    'hide_amount' => false
                 ];
             }
             
@@ -808,28 +862,13 @@ $branch_domain";
                 return strtotime($b['date']) - strtotime($a['date']);
             });
             
-            // 4. Limit to most recent 20 transactions
-            $transactions = array_slice($transactions, 0, 20);
-            
-            // Apply role-based access controls
-            $admin_mobile = $_SESSION['admin_mobile'];
-            $is_manager = is_admin_manager($admin_mobile);
-            $current_branch_id = isset($_SESSION['branch_id']) ? $_SESSION['branch_id'] : 1;
-            $current_sales_center_id = isset($_SESSION['sales_center_id']) ? $_SESSION['sales_center_id'] : 1;
-            
-            // Process transactions based on admin role
-            $processed_transactions = array();
-            foreach ($transactions as $t) {
-                // Add mobile field to each transaction for masking
-                $t['mobile'] = $mobile;
-                $processed_transactions[] = process_transaction_for_display($t, $is_manager, $current_branch_id, $current_sales_center_id, $admin_mobile);
-            }
+            // No limit - return ALL transactions for inquiry
             
             echo json_encode([
                 'status' => 'success',
                 'credit' => (int)$member['credit'],
                 'credit_value' => (int)($member['credit'] * 5000),
-                'transactions' => $processed_transactions
+                'transactions' => $transactions
             ]);
             exit;
         } catch (Throwable $e) {
@@ -963,6 +1002,22 @@ $branch_domain";
         $admin = $_SESSION['admin_mobile'];
         $mobile = isset($_POST['mobile']) ? trim($_POST['mobile']) : '';
         $amount = isset($_POST['amount']) ? trim($_POST['amount']) : '';
+        $description = isset($_POST['description']) ? trim($_POST['description']) : '';
+        $no_credit = isset($_POST['no_credit']) && $_POST['no_credit'] === 'true' ? 1 : 0;
+        
+        // Handle selected_advisors array (from FormData with selected_advisors[])
+        $selected_advisors = [];
+        if (isset($_POST['selected_advisors']) && is_array($_POST['selected_advisors'])) {
+            $selected_advisors = array_map('intval', $_POST['selected_advisors']);
+        }
+        
+        // Debug logging
+        error_log('Add subscriber - Received data:');
+        error_log('selected_advisors: ' . print_r($_POST['selected_advisors'] ?? 'not set', true));
+        error_log('parsed selected_advisors: ' . print_r($selected_advisors, true));
+        error_log('description: ' . $description);
+        error_log('no_credit: ' . $no_credit);
+        
         if (!$mobile) { echo json_encode(['status'=>'error','message'=>'mobile_required']); exit; }
         
         // Get branch and sales center
@@ -972,17 +1027,87 @@ $branch_domain";
         // Check if sales_center_id was provided in the request, otherwise use the session value
         $sales_center_id = isset($_POST['sales_center_id']) ? (int)$_POST['sales_center_id'] : 
                           (isset($_SESSION['sales_center_id']) ? $_SESSION['sales_center_id'] : 1);
+        
+        // Find appropriate advisor for this transaction (backward compatibility)
+        require_once 'advisor_utils.php';
+        $advisor_id = find_advisor_for_transaction($branch_id, $sales_center_id, $admin);
+        
         try {
             // check existing
             $ch = $pdo->prepare('SELECT id FROM subscribers WHERE mobile = ? LIMIT 1'); $ch->execute([$mobile]); $existingId = $ch->fetchColumn();
             if ($existingId){
                 if ($amount !== '' && preg_match('/^\d+$/',$amount)){
                     $pdo->beginTransaction();
-                    $ins = $pdo->prepare('INSERT INTO purchases (subscriber_id,mobile,amount,admin_number,branch_id,sales_center_id,created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())'); $ins->execute([$existingId,$mobile,$amount,$admin,$branch_id,$sales_center_id]);
-                    $creditToAdd = round(((float)$amount)/100000.0, 1);
+                    
+                    // Check if purchases table has new columns
+                    $hasDescriptionColumn = false;
+                    $hasNoCreditColumn = false;
+                    try {
+                        $checkStmt = $pdo->prepare("SHOW COLUMNS FROM purchases LIKE 'description'");
+                        $checkStmt->execute();
+                        $hasDescriptionColumn = $checkStmt->rowCount() > 0;
+                        
+                        $checkStmt = $pdo->prepare("SHOW COLUMNS FROM purchases LIKE 'no_credit'");
+                        $checkStmt->execute();
+                        $hasNoCreditColumn = $checkStmt->rowCount() > 0;
+                    } catch (Exception $e) {
+                        // Ignore column check errors for backward compatibility
+                    }
+                    
+                    // Insert purchase record with dynamic column handling
+                    if ($hasDescriptionColumn && $hasNoCreditColumn) {
+                        $ins = $pdo->prepare('INSERT INTO purchases (subscriber_id,mobile,amount,admin_number,branch_id,sales_center_id,advisor_id,description,no_credit,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'); 
+                        $ins->execute([$existingId,$mobile,$amount,$admin,$branch_id,$sales_center_id,$advisor_id,$description,$no_credit]);
+                    } else {
+                        // Fallback for older schema
+                        $ins = $pdo->prepare('INSERT INTO purchases (subscriber_id,mobile,amount,admin_number,branch_id,sales_center_id,advisor_id,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())'); 
+                        $ins->execute([$existingId,$mobile,$amount,$admin,$branch_id,$sales_center_id,$advisor_id]);
+                    }
+                    $purchase_id = $pdo->lastInsertId();
+                    
+                    // Handle multiple advisor selection
+                    if (!empty($selected_advisors)) {
+                        error_log('Processing advisor selection. Selected advisors: ' . print_r($selected_advisors, true));
+                        $checkPurchaseAdvisorsTable = false;
+                        try {
+                            $checkStmt = $pdo->prepare("SHOW TABLES LIKE 'purchase_advisors'");
+                            $checkStmt->execute();
+                            $checkPurchaseAdvisorsTable = $checkStmt->rowCount() > 0;
+                            error_log('purchase_advisors table exists: ' . ($checkPurchaseAdvisorsTable ? 'yes' : 'no'));
+                        } catch (Exception $e) {
+                            error_log('Error checking purchase_advisors table: ' . $e->getMessage());
+                        }
+                        
+                        if ($checkPurchaseAdvisorsTable) {
+                            $advisorInsert = $pdo->prepare('INSERT IGNORE INTO purchase_advisors (purchase_id, advisor_id) VALUES (?, ?)');
+                            foreach ($selected_advisors as $selected_advisor_id) {
+                                if ($selected_advisor_id > 0) {
+                                    error_log("Inserting advisor link: purchase_id=$purchase_id, advisor_id=$selected_advisor_id");
+                                    $advisorInsert->execute([$purchase_id, $selected_advisor_id]);
+                                    error_log("Advisor insert affected rows: " . $advisorInsert->rowCount());
+                                }
+                            }
+                            
+                            // Process advisor credits and send SMS notifications
+                            require_once 'advisor_utils.php';
+                            try {
+                                $credit_result = process_advisor_credits($purchase_id, $selected_advisors, (float)$amount, $branch_id, $sales_center_id);
+                                error_log("Advisor credit processing result: " . print_r($credit_result, true));
+                            } catch (Exception $e) {
+                                error_log("Error in advisor credit processing: " . $e->getMessage());
+                                // Continue with the main purchase process even if advisor credit processing fails
+                            }
+                        }
+                    } else {
+                        error_log('No advisors selected for this purchase');
+                    }
+                    
+                    // Calculate credit (only if no_credit is false)
+                    $creditToAdd = $no_credit ? 0 : round(((float)$amount)/100000.0, 1);
                     if ($creditToAdd>0){ $upd = $pdo->prepare('UPDATE subscribers SET credit = credit + ? WHERE id = ?'); $upd->execute([$creditToAdd,$existingId]); }
                     $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); $sel->execute([$existingId]); $newCredit = (int)$sel->fetchColumn();
                     $pdo->commit();
+                    
                     // Get branch and sales center info for SMS and response
                     $branch_info = get_branch_info($branch_id);
                     
@@ -997,7 +1122,8 @@ $branch_domain";
                     
                     // Get branch domain
                     $branch_domain = get_branch_domain($branch_id);
-                    $message = "$message_label\nاز خرید شما متشکریم.\nامتیاز کسب‌ شده از خرید امروز: " . intval($creditToAdd * 5000) . " تومان\nامتیاز کل شما در باشگاه مشتریان: " . intval($newCredit * 5000) . " تومان\n$branch_domain";
+                    $creditMessage = $no_credit ? "" : "\nامتیاز کسب‌ شده از خرید امروز: " . intval($creditToAdd * 5000) . " تومان";
+                    $message = "$message_label\nاز خرید شما متشکریم.$creditMessage\nامتیاز کل شما در باشگاه مشتریان: " . intval($newCredit * 5000) . " تومان\n$branch_domain";
                     $sms = send_kavenegar_sms($mobile,$message);
                     echo json_encode([
                         'status' => 'success',
@@ -1014,8 +1140,71 @@ $branch_domain";
             $stmt = $pdo->prepare('INSERT INTO subscribers (mobile, verified, credit, created_at, admin_number, branch_id) VALUES (?, 0, 0, NOW(), ?, ?)'); $stmt->execute([$mobile,$admin,$branch_id]); $id = $pdo->lastInsertId();
             $newCredit = null;
             if ($amount !== '' && preg_match('/^\d+$/',$amount)){
-                $ins = $pdo->prepare('INSERT INTO purchases (subscriber_id,mobile,amount,admin_number,branch_id,sales_center_id,created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())'); $ins->execute([$id,$mobile,$amount,$admin,$branch_id,$sales_center_id]);
-                $creditToAdd = round(((float)$amount)/100000.0, 1);
+                // Check if purchases table has new columns
+                $hasDescriptionColumn = false;
+                $hasNoCreditColumn = false;
+                try {
+                    $checkStmt = $pdo->prepare("SHOW COLUMNS FROM purchases LIKE 'description'");
+                    $checkStmt->execute();
+                    $hasDescriptionColumn = $checkStmt->rowCount() > 0;
+                    
+                    $checkStmt = $pdo->prepare("SHOW COLUMNS FROM purchases LIKE 'no_credit'");
+                    $checkStmt->execute();
+                    $hasNoCreditColumn = $checkStmt->rowCount() > 0;
+                } catch (Exception $e) {
+                    // Ignore column check errors for backward compatibility
+                }
+                
+                // Insert purchase record with dynamic column handling
+                if ($hasDescriptionColumn && $hasNoCreditColumn) {
+                    $ins = $pdo->prepare('INSERT INTO purchases (subscriber_id,mobile,amount,admin_number,branch_id,sales_center_id,advisor_id,description,no_credit,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'); 
+                    $ins->execute([$id,$mobile,$amount,$admin,$branch_id,$sales_center_id,$advisor_id,$description,$no_credit]);
+                } else {
+                    // Fallback for older schema
+                    $ins = $pdo->prepare('INSERT INTO purchases (subscriber_id,mobile,amount,admin_number,branch_id,sales_center_id,advisor_id,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())'); 
+                    $ins->execute([$id,$mobile,$amount,$admin,$branch_id,$sales_center_id,$advisor_id]);
+                }
+                $purchase_id = $pdo->lastInsertId();
+                
+                // Handle multiple advisor selection
+                if (!empty($selected_advisors)) {
+                    error_log('Processing advisor selection for new user. Selected advisors: ' . print_r($selected_advisors, true));
+                    $checkPurchaseAdvisorsTable = false;
+                    try {
+                        $checkStmt = $pdo->prepare("SHOW TABLES LIKE 'purchase_advisors'");
+                        $checkStmt->execute();
+                        $checkPurchaseAdvisorsTable = $checkStmt->rowCount() > 0;
+                        error_log('purchase_advisors table exists: ' . ($checkPurchaseAdvisorsTable ? 'yes' : 'no'));
+                    } catch (Exception $e) {
+                        error_log('Error checking purchase_advisors table: ' . $e->getMessage());
+                    }
+                    
+                    if ($checkPurchaseAdvisorsTable) {
+                        $advisorInsert = $pdo->prepare('INSERT IGNORE INTO purchase_advisors (purchase_id, advisor_id) VALUES (?, ?)');
+                        foreach ($selected_advisors as $selected_advisor_id) {
+                            if ($selected_advisor_id > 0) {
+                                error_log("Inserting advisor link for new user: purchase_id=$purchase_id, advisor_id=$selected_advisor_id");
+                                $advisorInsert->execute([$purchase_id, $selected_advisor_id]);
+                                error_log("Advisor insert affected rows: " . $advisorInsert->rowCount());
+                            }
+                        }
+                        
+                        // Process advisor credits and send SMS notifications
+                        require_once 'advisor_utils.php';
+                        try {
+                            $credit_result = process_advisor_credits($purchase_id, $selected_advisors, (float)$amount, $branch_id, $sales_center_id);
+                            error_log("Advisor credit processing result for new user: " . print_r($credit_result, true));
+                        } catch (Exception $e) {
+                            error_log("Error in advisor credit processing for new user: " . $e->getMessage());
+                            // Continue with the main purchase process even if advisor credit processing fails
+                        }
+                    }
+                } else {
+                    error_log('No advisors selected for this new user purchase');
+                }
+                
+                // Calculate credit (only if no_credit is false)
+                $creditToAdd = $no_credit ? 0 : round(((float)$amount)/100000.0, 1);
                 if ($creditToAdd>0){ $upd = $pdo->prepare('UPDATE subscribers SET credit = credit + ? WHERE id = ?'); $upd->execute([$creditToAdd,$id]); }
                 $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); $sel->execute([$id]); $newCredit = intval($sel->fetchColumn());
             }
@@ -1038,7 +1227,8 @@ $branch_domain";
             
             // send SMS
             if ($amount !== '' && preg_match('/^\d+$/',$amount)){
-                $message = "$message_label\nبه باشگاه مشتریان فروشگاه خوش آمدید.\nامتیاز شما از خرید امروز : " . ($creditToAdd * 5000) . " تومان\nامتیاز کل شما در باشگاه مشتریان: " . ($newCredit * 5000) . " تومان\n$branch_domain";
+                $creditMessage = $no_credit ? "" : "\nامتیاز شما از خرید امروز : " . ($creditToAdd * 5000) . " تومان";
+                $message = "$message_label\nبه باشگاه مشتریان فروشگاه خوش آمدید.$creditMessage\nامتیاز کل شما در باشگاه مشتریان: " . ($newCredit * 5000) . " تومان\n$branch_domain";
             } else {
                 $message = "$message_label\nبه باشگاه مشتریان فروشگاه خوش آمدید.\n$branch_domain";
             }
@@ -1127,6 +1317,66 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       text-align:right;
       font-weight:bold;
     }
+    
+    /* Form section styling */
+    .form-section {
+      background: rgba(0,0,0,0.2);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .form-section:last-of-type {
+      margin-bottom: 0;
+    }
+    
+    .form-section h4 {
+      margin: 0 0 12px 0;
+      color: #fff;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    
+    .form-input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid #555;
+      background: #1a1a1a;
+      color: #fff;
+      font-size: 14px;
+      margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    
+    .form-input:last-child {
+      margin-bottom: 0;
+    }
+    
+    .form-input::placeholder {
+      color: #888;
+    }
+    
+    .form-checkbox-container {
+      display: flex;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    
+    .form-checkbox-container:last-child {
+      margin-bottom: 0;
+    }
+    
+    .form-checkbox {
+      margin-left: 8px;
+    }
+    
+    .form-checkbox-label {
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
@@ -1195,30 +1445,59 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       <!-- Purchase/subscription form (initially hidden) -->
       <div id="purchase_form" style="display:none">
         <h3>افزودن مشترک / ثبت خرید</h3>
-        <div>
-          <label>موبایل (الزامی)</label>
-          <input type="text" id="sub_mobile">
-        </div>
-        <div style="margin-top:8px">
-          <label>مبلغ خرید (تومان، اختیاری)</label>
-          <input type="text" id="sub_amount" placeholder="مثال: 250.000" inputmode="numeric">
+        
+        <!-- Top Section: Mobile and Amount -->
+        <div class="form-section">
+          <h4>اطلاعات مشتری و خرید</h4>
+          <input type="text" id="sub_mobile" class="form-input" placeholder="شماره موبایل (الزامی)">
+          <input type="text" id="sub_amount" class="form-input" placeholder="مبلغ خرید (تومان، اختیاری) - مثال: 250.000" inputmode="numeric">
           <input type="hidden" id="sub_amount_raw">
         </div>
+        
+        <!-- Middle Section: Description and Checkbox -->
+        <div class="form-section">
+          <h4>جزئیات خرید</h4>
+          <input type="text" id="sub_description" class="form-input" placeholder="توضیحات خرید (اختیاری)">
+          <div class="form-checkbox-container">
+            <input type="checkbox" id="sub_no_credit" class="form-checkbox">
+            <label for="sub_no_credit" class="form-checkbox-label">این خرید امتیاز به کاربر نمی‌دهد</label>
+          </div>
+        </div>
+        
         <?php 
         $branch_id = isset($_SESSION['branch_id']) ? $_SESSION['branch_id'] : get_current_branch();
-        if (has_dual_sales_centers($branch_id)): 
+        $has_multiple_stores = has_dual_sales_centers($branch_id);
+        if ($has_multiple_stores): 
           $sales_centers = get_branch_sales_centers($branch_id);
         ?>
-        <div style="margin-top:8px">
-          <label>انتخاب فروشگاه</label>
-          <select id="sub_sales_center" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;">
+        <!-- Store Selection (only for multiple stores) -->
+        <div class="form-section">
+          <h4>انتخاب فروشگاه</h4>
+          <select id="sub_sales_center" class="form-input">
             <?php foreach ($sales_centers as $sc_id => $sc_name): ?>
               <option value="<?php echo $sc_id; ?>"><?php echo htmlspecialchars($sc_name); ?></option>
             <?php endforeach; ?>
           </select>
         </div>
         <?php endif; ?>
-        <div style="margin-top:12px;display:flex;gap:8px">
+        
+        <!-- Bottom Section: Advisors Selection -->
+        <div class="form-section">
+          <h4>انتخاب فروشنده</h4>
+          <div id="advisor_selection_container">
+            <?php if ($has_multiple_stores): ?>
+            <div style="color:#aaa;padding:8px;border:1px dashed #555;border-radius:6px;text-align:center;">
+              ابتدا فروشگاه را انتخاب کنید تا فروشندگان نمایش داده شوند
+            </div>
+            <?php else: ?>
+            <div style="color:#aaa;padding:8px;border:1px dashed #555;border-radius:6px;text-align:center;">
+              در حال بارگذاری فروشندگان...
+            </div>
+            <?php endif; ?>
+          </div>
+        </div>
+        
+        <div style="margin-top:20px;display:flex;gap:8px">
           <button id="add_submit" class="btn btn-primary">ارسال</button>
           <button id="back_to_menu" class="btn btn-ghost">بازگشت</button>
         </div>
@@ -1241,7 +1520,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
         <!-- Member info (initially hidden) -->
         <div id="member_info" style="display:none;margin-top:20px;background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">
           <div id="member_credit" style="background:#d32f2f;color:white;font-weight:bold;font-size:18px;padding:12px 16px;border-radius:8px;text-align:center;width:100%;box-sizing:border-box;margin-bottom:20px;"></div>
-          <h4 style="margin-bottom:10px;">تاریخچه تراکنش‌ها</h4>
+          <h4 style="margin-bottom:10px;">تاریخچه کامل تراکنش‌ها (تمام شعب و فروشگاه‌ها)</h4>
           <div id="purchase_history">
             <table style="width:100%;border-collapse:collapse;">
               <thead>
@@ -1327,12 +1606,13 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                     <th style="text-align:right;padding:8px 4px;">زمان</th>
                     <th style="text-align:left;padding:8px 4px;">مبلغ (تومان)</th>
                     <th style="text-align:center;padding:8px 4px;">شعبه / فروشگاه</th>
+                    <th style="text-align:center;padding:8px 4px;">مشاور</th>
                     <th style="text-align:center;padding:8px 4px;">ادمین</th>
                     <th style="text-align:center;padding:8px 4px;">عملیات</th>
                   </tr>
                 </thead>
                 <tbody id="today_purchases_list">
-                  <tr><td colspan="4" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>
+                  <tr><td colspan="7" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1349,12 +1629,13 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                     <th style="text-align:left;padding:8px 4px;">مبلغ (تومان)</th>
                     <th style="text-align:center;padding:8px 4px;">نوع</th>
                     <th style="text-align:center;padding:8px 4px;">شعبه / فروشگاه</th>
+                    <th style="text-align:center;padding:8px 4px;">مشاور</th>
                     <th style="text-align:center;padding:8px 4px;">ادمین</th>
                     <th style="text-align:center;padding:8px 4px;">عملیات</th>
                   </tr>
                 </thead>
                 <tbody id="today_credits_list">
-                  <tr><td colspan="5" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>
+                  <tr><td colspan="8" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1435,8 +1716,20 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
             
             <div style="margin-bottom:12px;">
               <label>انتخاب مراکز فروش</label>
-              <div id="advisor_sales_centers" style="background:#1a1c1e;padding:10px;border-radius:6px;border:1px solid #333;">
-                <!-- Sales centers will be populated here -->
+              
+              <!-- Available sales centers dropdown -->
+              <div style="margin-bottom:8px;">
+                <select id="available_sales_centers" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;">
+                  <option value="">انتخاب مرکز فروش...</option>
+                </select>
+              </div>
+              
+              <!-- Selected sales centers list -->
+              <div style="background:#1a1c1e;padding:10px;border-radius:6px;border:1px solid #333;min-height:60px;">
+                <div style="color:#888;font-size:14px;margin-bottom:8px;">مراکز فروش انتخاب شده:</div>
+                <div id="selected_sales_centers" style="display:flex;flex-wrap:wrap;gap:6px;">
+                  <div style="color:#888;font-size:13px;" id="no_selection_message">هیچ مرکز فروشی انتخاب نشده است</div>
+                </div>
               </div>
             </div>
             
@@ -1639,7 +1932,126 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     document.getElementById('btn_purchase').addEventListener('click', function(){
       document.getElementById('btn_purchase').parentNode.style.display = 'none';
       document.getElementById('purchase_form').style.display = 'block';
+      
+      // Check if branch has multiple stores or single store
+      var salesCenterSelect = document.getElementById('sub_sales_center');
+      var hasMultipleStores = <?php echo json_encode($has_multiple_stores); ?>;
+      
+      if (hasMultipleStores) {
+        // Multiple stores - load advisors if sales center is already selected
+        if (salesCenterSelect && salesCenterSelect.value) {
+          loadAdvisorsForSalesCenter(salesCenterSelect.value);
+        }
+      } else {
+        // Single store - automatically load advisors for the default sales center (ID: 1)
+        loadAdvisorsForSalesCenter(1);
+      }
     });
+    
+    // Add sales center change listener for advisor loading (only for multiple stores)
+    var salesCenterSelect = document.getElementById('sub_sales_center');
+    var hasMultipleStores = <?php echo json_encode($has_multiple_stores); ?>;
+    
+    if (salesCenterSelect && hasMultipleStores) {
+      salesCenterSelect.addEventListener('change', function() {
+        loadAdvisorsForSalesCenter(this.value);
+      });
+      
+      // Load advisors on page load if sales center is already selected
+      if (salesCenterSelect.value) {
+        loadAdvisorsForSalesCenter(salesCenterSelect.value);
+      }
+    } else if (!hasMultipleStores) {
+      // For single store branches, automatically load advisors when DOM is ready
+      document.addEventListener('DOMContentLoaded', function() {
+        // Small delay to ensure form is ready
+        setTimeout(function() {
+          if (document.getElementById('advisor_selection_container')) {
+            loadAdvisorsForSalesCenter(1);
+          }
+        }, 100);
+      });
+    }
+    
+    // Function to load advisors for a specific sales center
+    function loadAdvisorsForSalesCenter(salesCenterId) {
+      const container = document.getElementById('advisor_selection_container');
+      if (!container) return;
+      
+      // Show loading state
+      container.innerHTML = '<div style="color:#aaa;padding:8px;text-align:center;">در حال بارگذاری فروشندگان...</div>';
+      
+      // Get current branch ID from session or default
+      const branchId = <?php echo json_encode(isset($_SESSION['branch_id']) ? $_SESSION['branch_id'] : get_current_branch()); ?>;
+      
+      postJSON({
+        action: 'get_advisors_for_purchase',
+        branch_id: branchId,
+        sales_center_id: salesCenterId
+      }).then(json => {
+        if (json.status === 'success') {
+          displayAdvisors(json.advisors);
+        } else {
+          container.innerHTML = '<div style="color:#ff5252;padding:8px;text-align:center;">خطا در بارگذاری فروشندگان</div>';
+        }
+      }).catch(error => {
+        console.error('Error loading advisors:', error);
+        container.innerHTML = '<div style="color:#ff5252;padding:8px;text-align:center;">خطا در اتصال به سرور</div>';
+      });
+    }
+    
+    // Function to display advisors in the selection container
+    function displayAdvisors(advisors) {
+      const container = document.getElementById('advisor_selection_container');
+      if (!container) return;
+      
+      if (advisors.length === 0) {
+        container.innerHTML = '<div style="color:#aaa;padding:8px;border:1px dashed #555;border-radius:6px;text-align:center;">هیچ فروشنده‌ای برای این فروشگاه یافت نشد</div>';
+        return;
+      }
+      
+      // Calculate items per column for roughly equal distribution
+      const itemsPerColumn = Math.ceil(advisors.length / 2);
+      const leftColumnAdvisors = advisors.slice(0, itemsPerColumn);
+      const rightColumnAdvisors = advisors.slice(itemsPerColumn);
+      
+      let html = '<div style="border:1px solid #555;border-radius:6px;padding:8px;background:#1a1a1a;">';
+      html += '<div style="display:flex;gap:16px;">';
+      
+      // Left column
+      html += '<div style="flex:1;">';
+      leftColumnAdvisors.forEach(advisor => {
+        html += `
+          <label style="display:flex;align-items:center;padding:4px 0;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.1);">
+            <input type="checkbox" class="advisor-checkbox" value="${advisor.id}" style="margin-left:8px;">
+            <span style="flex:1;">
+              ${advisor.full_name}
+            </span>
+          </label>
+        `;
+      });
+      html += '</div>';
+      
+      // Right column
+      html += '<div style="flex:1;">';
+      rightColumnAdvisors.forEach(advisor => {
+        html += `
+          <label style="display:flex;align-items:center;padding:4px 0;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.1);">
+            <input type="checkbox" class="advisor-checkbox" value="${advisor.id}" style="margin-left:8px;">
+            <span style="flex:1;">
+              ${advisor.full_name}
+            </span>
+          </label>
+        `;
+      });
+      html += '</div>';
+      
+      html += '</div>'; // Close flex container
+      html += '</div>'; // Close main container
+      html += '<div style="margin-top:4px;font-size:12px;color:#aaa;">می‌توانید یک یا چند فروشنده را انتخاب کنید</div>';
+      
+      container.innerHTML = html;
+    }
     
     document.getElementById('btn_inquiry').addEventListener('click', function(){
       document.getElementById('btn_inquiry').parentNode.style.display = 'none';
@@ -1687,6 +2099,11 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     
     // Advisor management button and functions
     <?php if (can_manage_advisors($admin_mobile)): ?>
+    
+    // Initialize global variables for advisor management
+    window.selectedSalesCenters = [];
+    window.allSalesCentersData = [];
+    
     document.getElementById('btn_advisor_management').addEventListener('click', function(){
       document.getElementById('btn_advisor_management').parentNode.style.display = 'none';
       document.getElementById('advisor_management_form').style.display = 'block';
@@ -1710,6 +2127,94 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       document.getElementById('advisor_form').style.display = 'none';
     });
     
+    // Sales center selection logic
+    document.getElementById('available_sales_centers').addEventListener('change', function(){
+      const selectedValue = this.value;
+      if (selectedValue) {
+        const selectedOption = this.options[this.selectedIndex];
+        addSalesCenter(selectedValue, selectedOption.dataset.displayName, selectedOption.dataset.branchId, selectedOption.dataset.salesCenterId);
+        this.value = ''; // Reset dropdown
+      }
+    });
+    
+    function addSalesCenter(value, displayName, branchId, salesCenterId) {
+      const selectedContainer = document.getElementById('selected_sales_centers');
+      const noSelectionMessage = document.getElementById('no_selection_message');
+      const availableSelect = document.getElementById('available_sales_centers');
+      
+      // Remove the "no selection" message if it exists
+      if (noSelectionMessage) {
+        noSelectionMessage.remove();
+      }
+      
+      // Check if already selected
+      if (window.selectedSalesCenters.find(sc => sc.value === value)) {
+        return;
+      }
+      
+      // Add to selected items array
+      window.selectedSalesCenters.push({
+        value: value,
+        displayName: displayName,
+        branch_id: parseInt(branchId),
+        sales_center_id: parseInt(salesCenterId)
+      });
+      
+      // Create selected item element
+      const selectedItem = document.createElement('div');
+      selectedItem.style.cssText = 'background:#4caf50;color:white;padding:4px 8px;border-radius:4px;font-size:13px;display:flex;align-items:center;gap:6px;';
+      selectedItem.innerHTML = `
+        <span>${displayName}</span>
+        <button type="button" onclick="removeSalesCenter('${value}')" style="background:rgba(255,255,255,0.2);border:none;color:white;border-radius:50%;width:18px;height:18px;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;">×</button>
+      `;
+      
+      selectedContainer.appendChild(selectedItem);
+      
+      // Remove from available options
+      const optionToRemove = availableSelect.querySelector(`option[value="${value}"]`);
+      if (optionToRemove) {
+        optionToRemove.remove();
+      }
+      
+      console.log('Added sales center:', displayName, 'Current selections:', window.selectedSalesCenters);
+    }
+    
+    function removeSalesCenter(value) {
+      const selectedContainer = document.getElementById('selected_sales_centers');
+      const availableSelect = document.getElementById('available_sales_centers');
+      
+      // Find and remove from selected items array
+      const itemIndex = window.selectedSalesCenters.findIndex(sc => sc.value === value);
+      if (itemIndex > -1) {
+        const removedItem = window.selectedSalesCenters.splice(itemIndex, 1)[0];
+        
+        // Remove the visual element
+        const itemElement = selectedContainer.querySelector(`div:has(button[onclick="removeSalesCenter('${value}')"])`);
+        if (itemElement) {
+          itemElement.remove();
+        }
+        
+        // Add back to available options
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = removedItem.displayName;
+        option.dataset.branchId = removedItem.branch_id;
+        option.dataset.salesCenterId = removedItem.sales_center_id;
+        option.dataset.displayName = removedItem.displayName;
+        availableSelect.appendChild(option);
+        
+        // Show "no selection" message if no items selected
+        if (window.selectedSalesCenters.length === 0) {
+          selectedContainer.innerHTML = '<div style="color:#888;font-size:13px;" id="no_selection_message">هیچ مرکز فروشی انتخاب نشده است</div>';
+        }
+        
+        console.log('Removed sales center:', removedItem.displayName, 'Current selections:', window.selectedSalesCenters);
+      }
+    }
+    
+    // Make removeSalesCenter globally accessible
+    window.removeSalesCenter = removeSalesCenter;
+    
     // Advisor form submission
     document.getElementById('advisor_form_element').addEventListener('submit', function(e){
       e.preventDefault();
@@ -1719,48 +2224,25 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       const mobile = document.getElementById('advisor_mobile').value.trim();
       const msg = document.getElementById('advisor_msg');
       
-      // Get selected sales centers
+      // Get selected sales centers from the new structure
       const salesCenters = [];
       
-      // Debug: Check the container first
-      const container = document.getElementById('advisor_sales_centers');
-      console.log('Sales centers container:', container);
-      console.log('Container HTML:', container ? container.innerHTML : 'Container not found');
+      // Ensure the global variable exists
+      if (!window.selectedSalesCenters) {
+        window.selectedSalesCenters = [];
+      }
       
-      const allCheckboxes = document.querySelectorAll('#advisor_sales_centers input[type="checkbox"]');
-      const checkedCheckboxes = document.querySelectorAll('#advisor_sales_centers input[type="checkbox"]:checked');
-      
-      // Debug: Log checkbox selection details
-      console.log('Number of total checkboxes found:', allCheckboxes.length);
-      console.log('Number of checked checkboxes:', checkedCheckboxes.length);
-      
-      // Log all checkboxes and their states
-      allCheckboxes.forEach((cb, index) => {
-        console.log(`Checkbox ${index}:`, {
-          value: cb.value,
-          checked: cb.checked,
-          element: cb
-        });
-      });
-      
-      checkedCheckboxes.forEach(cb => {
-        const value = cb.value;
-        console.log('Processing checked checkbox with value:', value);
-        // Value format is "branchId_salesCenterId"
-        const parts = value.split('_');
-        if (parts.length === 2) {
-          const salesCenter = {
-            branch_id: parseInt(parts[0]),
-            sales_center_id: parseInt(parts[1])
+      if (window.selectedSalesCenters && window.selectedSalesCenters.length > 0) {
+        window.selectedSalesCenters.forEach((sc) => {
+          const salesCenterObj = {
+            branch_id: sc.branch_id,
+            sales_center_id: sc.sales_center_id
           };
-          console.log('Adding sales center:', salesCenter);
-          salesCenters.push(salesCenter);
-        } else {
-          console.log('Invalid checkbox value format:', value, 'parts:', parts);
-        }
-      });
+          salesCenters.push(salesCenterObj);
+        });
+      }
       
-      console.log('Final sales centers array:', salesCenters);
+      console.log('Sales centers for submission:', salesCenters);
 
       msg.textContent = '';
 
@@ -1771,19 +2253,28 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
 
       if (salesCenters.length === 0) {
         msg.textContent = 'حداقل یک مرکز فروش باید انتخاب شود';
-        console.log('No sales centers selected - showing error');
         return;
-      }      const action = advisorId ? 'update_advisor' : 'add_advisor';
+      }
+      
+      // If we reach here, validation passed - proceed with submission
+      console.log('All validations passed. Proceeding with form submission...');
+      
+      const action = advisorId ? 'update_advisor' : 'add_advisor';
       const data = {
         action: action,
         full_name: fullName,
-        mobile_number: mobile,
-        sales_centers: salesCenters
+        mobile_number: mobile
       };
       
       if (advisorId) {
         data.advisor_id = advisorId;
       }
+      
+      // Add sales centers data properly formatted for URLSearchParams
+      salesCenters.forEach((sc, index) => {
+        data[`sales_centers[${index}][branch_id]`] = sc.branch_id;
+        data[`sales_centers[${index}][sales_center_id]`] = sc.sales_center_id;
+      });
       
       msg.textContent = 'در حال پردازش...';
       
@@ -1878,24 +2369,33 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       document.getElementById('advisor_full_name').value = advisor.full_name;
       document.getElementById('advisor_mobile').value = advisor.mobile_number || '';
       
-      // Populate all sales centers and select the ones for this advisor
+      // Populate all sales centers first
       populateAllSalesCenters();
       
       // Wait a bit for the sales centers to be populated, then select them
       setTimeout(() => {
         advisor.sales_centers.forEach(scInfo => {
-          let checkboxValue;
+          let value, branchId, salesCenterId;
+          
           if (typeof scInfo === 'object' && scInfo.branch_id && scInfo.sales_center_id) {
             // New format
-            checkboxValue = `${scInfo.branch_id}_${scInfo.sales_center_id}`;
+            branchId = scInfo.branch_id;
+            salesCenterId = scInfo.sales_center_id;
+            value = `${branchId}_${salesCenterId}`;
           } else {
             // Old format - try to find it in the current branch
-            checkboxValue = `${advisor.branch_id}_${scInfo}`;
+            branchId = advisor.branch_id;
+            salesCenterId = scInfo;
+            value = `${branchId}_${salesCenterId}`;
           }
           
-          const checkbox = document.querySelector(`#advisor_sales_centers input[value="${checkboxValue}"]`);
-          if (checkbox) {
-            checkbox.checked = true;
+          // Find the sales center in the available data
+          const salesCenterData = window.allSalesCentersData.find(sc => 
+            sc.branch_id == branchId && sc.sales_center_id == salesCenterId
+          );
+          
+          if (salesCenterData) {
+            addSalesCenter(value, salesCenterData.display_name, branchId, salesCenterId);
           }
         });
       }, 100);
@@ -1933,33 +2433,40 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     }
     
     function populateAllSalesCenters() {
-      const salesCentersContainer = document.getElementById('advisor_sales_centers');
+      const availableSelect = document.getElementById('available_sales_centers');
+      const selectedContainer = document.getElementById('selected_sales_centers');
+      const noSelectionMessage = document.getElementById('no_selection_message');
       
       console.log('populateAllSalesCenters called');
       console.log('allSalesCentersData:', window.allSalesCentersData);
       
       if (!window.allSalesCentersData || window.allSalesCentersData.length === 0) {
         console.log('No sales centers data available');
-        salesCentersContainer.innerHTML = '<p style="color:#888;text-align:center;">مرکز فروشی یافت نشد</p>';
+        availableSelect.innerHTML = '<option value="">مرکز فروشی یافت نشد</option>';
         return;
       }
       
-      let html = '';
+      // Clear and populate the dropdown with all sales centers
+      availableSelect.innerHTML = '<option value="">انتخاب مرکز فروش...</option>';
       window.allSalesCentersData.forEach(sc => {
         const value = `${sc.branch_id}_${sc.sales_center_id}`;
-        console.log('Creating checkbox for:', sc.display_name, 'with value:', value);
-        html += `
-          <div style="margin-bottom:8px;">
-            <label style="display:flex;align-items:center;cursor:pointer;">
-              <input type="checkbox" value="${value}" style="margin-left:8px;">
-              <span>${sc.display_name}</span>
-            </label>
-          </div>
-        `;
+        console.log('Creating option for:', sc.display_name, 'with value:', value);
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = sc.display_name;
+        option.dataset.branchId = sc.branch_id;
+        option.dataset.salesCenterId = sc.sales_center_id;
+        option.dataset.displayName = sc.display_name;
+        availableSelect.appendChild(option);
       });
       
-      salesCentersContainer.innerHTML = html;
-      console.log('Sales centers HTML populated');
+      // Clear selected items
+      selectedContainer.innerHTML = '<div style="color:#888;font-size:13px;" id="no_selection_message">هیچ مرکز فروشی انتخاب نشده است</div>';
+      
+      // Store selected items globally for form submission
+      window.selectedSalesCenters = [];
+      
+      console.log('Sales centers dropdown populated');
     }
     
     function resetAdvisorForm() {
@@ -1967,7 +2474,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       document.getElementById('advisor_full_name').value = '';
       document.getElementById('advisor_mobile').value = '';
       
-      // Populate all sales centers and uncheck all
+      // Reset the new multi-select structure
       populateAllSalesCenters();
       
       document.getElementById('advisor_msg').textContent = '';
@@ -2203,23 +2710,49 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     document.getElementById('add_submit').addEventListener('click', function(){
       var mobile = document.getElementById('sub_mobile').value.trim(); 
       var amount = document.getElementById('sub_amount_raw').value.trim(); // Use raw value
+      var description = document.getElementById('sub_description').value.trim();
+      var noCredit = document.getElementById('sub_no_credit').checked;
       var msg = document.getElementById('add_msg'); msg.textContent='';
       
-      // Get sales center ID if the select element exists
-      var salesCenterId = 1; // Default value
+      // Get sales center ID if the select element exists, otherwise use default (1)
+      var salesCenterId = 1; // Default value for single store
       var salesCenterSelect = document.getElementById('sub_sales_center');
       if (salesCenterSelect) {
         salesCenterId = salesCenterSelect.value;
       }
       
+      // Get selected advisors
+      var selectedAdvisors = [];
+      var advisorCheckboxes = document.querySelectorAll('.advisor-checkbox:checked');
+      advisorCheckboxes.forEach(function(checkbox) {
+        selectedAdvisors.push(parseInt(checkbox.value));
+      });
+      
       if (!mobile) { msg.textContent='لطفاً موبایل را وارد کنید.'; return; }
       
-      postJSON({
-        action: 'add_subscriber',
-        mobile: mobile,
-        amount: amount,
-        sales_center_id: salesCenterId
-      }).then(json=>{
+      // Create FormData to properly handle arrays
+      var formData = new FormData();
+      formData.append('action', 'add_subscriber');
+      formData.append('mobile', mobile);
+      formData.append('amount', amount);
+      formData.append('description', description);
+      formData.append('no_credit', noCredit);
+      formData.append('sales_center_id', salesCenterId);
+      
+      // Add selected advisors as array
+      selectedAdvisors.forEach(function(advisorId) {
+        formData.append('selected_advisors[]', advisorId);
+      });
+      
+      // Debug logging
+      console.log('Submitting purchase with selected advisors:', selectedAdvisors);
+      
+      fetch('admin.php', {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => response.json())
+      .then(json => {
         if (json.status==='success'){
           // Create a success message, including store information if available
           let successMsg = 'عملیات با موفقیت انجام شد.';
@@ -2235,13 +2768,25 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
             msg.textContent = successMsg;
           }
           
+          // Clear form fields
           document.getElementById('sub_mobile').value=''; 
           document.getElementById('sub_amount').value='';
           document.getElementById('sub_amount_raw').value='';
+          document.getElementById('sub_description').value='';
+          document.getElementById('sub_no_credit').checked = false;
+          
+          // Clear advisor selections
+          document.querySelectorAll('.advisor-checkbox').forEach(function(checkbox) {
+            checkbox.checked = false;
+          });
         } else {
           msg.textContent = json.message || 'خطا';
         }
-      }).catch(()=>{ msg.textContent='خطا در اتصال'; });
+      })
+      .catch(error => {
+        console.error('Submit error:', error);
+        msg.textContent = 'خطا در اتصال';
+      });
     });
     
     // Credit use amount input formatting
@@ -2483,8 +3028,8 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       msg.textContent = '';
       
       // Set loading state
-      purchasesList.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>';
-      creditsList.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>';
+      purchasesList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>';
+      creditsList.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>';
       
       // Format the date string properly for API
       function formatDateForAPI(dateObj) {
@@ -2531,6 +3076,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                     <td style="padding:8px 4px;">${formatTime(purchase.date)}</td>
                     <td style="padding:8px 4px;text-align:left;">${amountDisplay}</td>
                     <td style="padding:8px 4px;text-align:center;font-size:0.85em;">${purchase.branch_store || ''}</td>
+                    <td style="padding:8px 4px;text-align:center;font-size:0.85em;">${purchase.advisor_name || '-'}</td>
                     <td style="padding:8px 4px;text-align:center;">${purchase.admin || ''}</td>
                     <td style="padding:8px 4px;text-align:center;">
                       ${canDelete ? `<button class="btn-delete" data-id="${purchase.id}" data-type="purchase" style="background:#ff5252;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;">حذف</button>` : ''}
@@ -2540,7 +3086,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
               });
               purchasesList.innerHTML = purchasesHtml;
             } else {
-              purchasesList.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;color:#b0b3b8;">امروز خریدی ثبت نشده است</td></tr>';
+              purchasesList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;color:#b0b3b8;">امروز خریدی ثبت نشده است</td></tr>';
             }
             
             // Update credits list
@@ -2567,6 +3113,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                       '<span style="color:#ff9800;">مرجوعی</span>' : 
                       '<span style="color:#03a9f4;">استفاده</span>'}</td>
                     <td style="padding:8px 4px;text-align:center;font-size:0.85em;">${credit.branch_store || ''}</td>
+                    <td style="padding:8px 4px;text-align:center;font-size:0.85em;">${credit.advisor_name || '-'}</td>
                     <td style="padding:8px 4px;text-align:center;">${credit.admin || ''}</td>
                     <td style="padding:8px 4px;text-align:center;">
                       ${canDelete ? `<button class="btn-delete" data-id="${credit.id}" data-type="credit" style="background:#ff5252;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;">حذف</button>` : ''}
@@ -2576,7 +3123,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
               });
               creditsList.innerHTML = creditsHtml;
             } else {
-              creditsList.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:15px;color:#b0b3b8;">امروز اعتباری استفاده نشده است</td></tr>';
+              creditsList.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:15px;color:#b0b3b8;">امروز اعتباری استفاده نشده است</td></tr>';
             }
             
             // Update totals
@@ -2654,19 +3201,19 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
             // Show more detailed error in the UI if debug info is available
             if (response.debug) {
               console.error('Debug info:', response.debug);
-              purchasesList.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری: ${errorMsg}</td></tr>`;
-              creditsList.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری: ${errorMsg}</td></tr>`;
+              purchasesList.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری: ${errorMsg}</td></tr>`;
+              creditsList.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری: ${errorMsg}</td></tr>`;
             } else {
-              purchasesList.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
-              creditsList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
+              purchasesList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
+              creditsList.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
             }
           }
         })
         .catch(function(error) {
           console.error('Error loading today report:', error);
           msg.textContent = 'خطا در اتصال به سرور';
-          purchasesList.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
-          creditsList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
+          purchasesList.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
+          creditsList.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
         });
     }
     
