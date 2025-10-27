@@ -2,6 +2,7 @@
 session_start();
 header('Content-Type: application/json; charset=utf-8');
 require_once 'db.php';
+require_once 'pending_credits_utils.php';
 
 try {
     // Require logged-in session
@@ -49,12 +50,16 @@ try {
     $stmt = $pdo->prepare("UPDATE subscribers SET full_name=?, email=?, city=?, birthday=?, credit=credit+? WHERE id=?");
     $stmt->execute([$full_name, $email, $city, $save_birthday, $add_credit, $user_id]);
 
-    // Get new credit
-    $stmt = $pdo->prepare("SELECT credit FROM subscribers WHERE id=?");
-    $stmt->execute([$user_id]);
-    $new_credit = $stmt->fetchColumn();
+    // Get combined credit information (available + pending)
+    $credit_info = get_combined_credits($pdo, $user_id);
 
-    echo json_encode(['status' => 'success', 'credit' => (int)$new_credit]);
+    echo json_encode([
+        'status' => 'success', 
+        'credit' => (int)$new_credit,
+        'available_credit_toman' => $credit_info['available_credit_toman'],
+        'pending_credit_toman' => $credit_info['pending_credit_toman'],
+        'total_credit_toman' => $credit_info['total_credit_toman']
+    ]);
     exit;
 
 } catch (Exception $e) {

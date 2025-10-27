@@ -5,6 +5,7 @@ session_start();
 require_once 'config.php';
 require_once 'db.php';
 require_once 'branch_utils.php';
+require_once 'pending_credits_utils.php';
 
 // Set time zone to Tehran for all date/time operations
 date_default_timezone_set('Asia/Tehran');
@@ -370,25 +371,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                 // Continue without filtering by active
             }
             
-            // Prepare the SQL to get all transactions with advisor information
+            // Prepare the SQL to get all transactions with advisor information from purchase_advisors table
             if ($columnExists) {
                 $sql = '
-                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id, p.advisor_id,
-                           a.full_name as advisor_name
+                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id,
+                           GROUP_CONCAT(DISTINCT a.full_name SEPARATOR ", ") as advisor_names
                     FROM purchases p
                     LEFT JOIN subscribers s ON p.subscriber_id = s.id
-                    LEFT JOIN advisors a ON p.advisor_id = a.id
+                    LEFT JOIN purchase_advisors pa ON p.id = pa.purchase_id
+                    LEFT JOIN advisors a ON pa.advisor_id = a.id
                     WHERE p.created_at BETWEEN ? AND ? AND p.active = 1
+                    GROUP BY p.id
                     ORDER BY p.created_at DESC
                 ';
             } else {
                 $sql = '
-                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id, p.advisor_id,
-                           a.full_name as advisor_name
+                    SELECT p.id, p.mobile, p.amount, p.created_at, s.full_name, p.admin_number, p.branch_id, p.sales_center_id,
+                           GROUP_CONCAT(DISTINCT a.full_name SEPARATOR ", ") as advisor_names
                     FROM purchases p
                     LEFT JOIN subscribers s ON p.subscriber_id = s.id
-                    LEFT JOIN advisors a ON p.advisor_id = a.id
+                    LEFT JOIN purchase_advisors pa ON p.id = pa.purchase_id
+                    LEFT JOIN advisors a ON pa.advisor_id = a.id
                     WHERE p.created_at BETWEEN ? AND ?
+                    GROUP BY p.id
                     ORDER BY p.created_at DESC
                 ';
             }
@@ -425,8 +430,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
                     'branch_id' => $branch_id,
                     'sales_center_id' => $sales_center_id,
                     'branch_store' => $branch_store,
-                    'advisor_id' => $row['advisor_id'] ? (int)$row['advisor_id'] : null,
-                    'advisor_name' => $row['advisor_name'] ?: null,
+                    'advisor_name' => $row['advisor_names'] ?: null,
                     'type' => 'purchase'
                 ];
             }
@@ -771,6 +775,9 @@ $branch_domain";
                 echo json_encode(['status'=>'error','message'=>'not_a_member']); exit;
             }
             
+            // Get combined credit information (available + pending)
+            $credit_info = get_combined_credits_by_mobile($pdo, $mobile);
+            
             // Get ALL purchase history and credit usage - NO LIMITS, from ALL BRANCHES
             $transactions = [];
             
@@ -867,7 +874,13 @@ $branch_domain";
             echo json_encode([
                 'status' => 'success',
                 'credit' => (int)$member['credit'],
-                'credit_value' => (int)($member['credit'] * 5000),
+                'credit_value' => $credit_info['available_credit_toman'],
+                'available_credit' => $credit_info['available_credit'],
+                'available_credit_toman' => $credit_info['available_credit_toman'],
+                'pending_credit' => $credit_info['pending_credit'],
+                'pending_credit_toman' => $credit_info['pending_credit_toman'],
+                'total_credit_toman' => $credit_info['total_credit_toman'],
+                'pending_details' => $credit_info['pending_details'],
                 'transactions' => $transactions
             ]);
             exit;
@@ -1104,8 +1117,24 @@ $branch_domain";
                     
                     // Calculate credit (only if no_credit is false)
                     $creditToAdd = $no_credit ? 0 : round(((float)$amount)/100000.0, 1);
-                    if ($creditToAdd>0){ $upd = $pdo->prepare('UPDATE subscribers SET credit = credit + ? WHERE id = ?'); $upd->execute([$creditToAdd,$existingId]); }
-                    $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); $sel->execute([$existingId]); $newCredit = (int)$sel->fetchColumn();
+                    
+                    // Use pending credits system: add to pending_credits table instead of direct credit
+                    if ($creditToAdd > 0) {
+                        // Ensure pending_credits table exists
+                        ensure_pending_credits_table($pdo);
+                        
+                        // Add to pending credits instead of direct credit
+                        add_pending_credit($pdo, $existingId, $mobile, $purchase_id, $creditToAdd, $branch_id, $sales_center_id, $admin);
+                        
+                        // Get available credit for display (not including pending)
+                        $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); 
+                        $sel->execute([$existingId]); 
+                        $newCredit = (int)$sel->fetchColumn();
+                    } else {
+                        $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); 
+                        $sel->execute([$existingId]); 
+                        $newCredit = (int)$sel->fetchColumn();
+                    }
                     $pdo->commit();
                     
                     // Get branch and sales center info for SMS and response
@@ -1122,8 +1151,15 @@ $branch_domain";
                     
                     // Get branch domain
                     $branch_domain = get_branch_domain($branch_id);
-                    $creditMessage = $no_credit ? "" : "\nامتیاز کسب‌ شده از خرید امروز: " . intval($creditToAdd * 5000) . " تومان";
-                    $message = "$message_label\nاز خرید شما متشکریم.$creditMessage\nامتیاز کل شما در باشگاه مشتریان: " . intval($newCredit * 5000) . " تومان\n$branch_domain";
+                    
+                    // Update SMS message to reflect pending credit system
+                    if ($no_credit) {
+                        $creditMessage = "";
+                    } else {
+                        $creditMessage = "\nامتیاز کسب‌ شده از خرید امروز: " . intval($creditToAdd * 5000) . " تومان (48 ساعت آینده فعال می‌شود)";
+                    }
+                    
+                    $message = "$message_label\nاز خرید شما متشکریم.$creditMessage\nامتیاز قابل استفاده شما در باشگاه مشتریان: " . intval($newCredit * 5000) . " تومان\n$branch_domain";
                     $sms = send_kavenegar_sms($mobile,$message);
                     echo json_encode([
                         'status' => 'success',
@@ -1205,8 +1241,24 @@ $branch_domain";
                 
                 // Calculate credit (only if no_credit is false)
                 $creditToAdd = $no_credit ? 0 : round(((float)$amount)/100000.0, 1);
-                if ($creditToAdd>0){ $upd = $pdo->prepare('UPDATE subscribers SET credit = credit + ? WHERE id = ?'); $upd->execute([$creditToAdd,$id]); }
-                $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); $sel->execute([$id]); $newCredit = intval($sel->fetchColumn());
+                
+                // Use pending credits system: add to pending_credits table instead of direct credit
+                if ($creditToAdd > 0) {
+                    // Ensure pending_credits table exists
+                    ensure_pending_credits_table($pdo);
+                    
+                    // Add to pending credits instead of direct credit
+                    add_pending_credit($pdo, $id, $mobile, $purchase_id, $creditToAdd, $branch_id, $sales_center_id, $admin);
+                    
+                    // Get available credit for display (not including pending)
+                    $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); 
+                    $sel->execute([$id]); 
+                    $newCredit = intval($sel->fetchColumn());
+                } else {
+                    $sel = $pdo->prepare('SELECT credit FROM subscribers WHERE id = ? LIMIT 1'); 
+                    $sel->execute([$id]); 
+                    $newCredit = intval($sel->fetchColumn());
+                }
             }
             $pdo->commit();
             
@@ -1227,8 +1279,12 @@ $branch_domain";
             
             // send SMS
             if ($amount !== '' && preg_match('/^\d+$/',$amount)){
-                $creditMessage = $no_credit ? "" : "\nامتیاز شما از خرید امروز : " . ($creditToAdd * 5000) . " تومان";
-                $message = "$message_label\nبه باشگاه مشتریان فروشگاه خوش آمدید.$creditMessage\nامتیاز کل شما در باشگاه مشتریان: " . ($newCredit * 5000) . " تومان\n$branch_domain";
+                if ($no_credit) {
+                    $creditMessage = "";
+                } else {
+                    $creditMessage = "\nامتیاز شما از خرید امروز: " . ($creditToAdd * 5000) . " تومان (48 ساعت آینده فعال می‌شود)";
+                }
+                $message = "$message_label\nبه باشگاه مشتریان فروشگاه خوش آمدید.$creditMessage\nامتیاز قابل استفاده شما در باشگاه مشتریان: " . ($newCredit * 5000) . " تومان\n$branch_domain";
             } else {
                 $message = "$message_label\nبه باشگاه مشتریان فروشگاه خوش آمدید.\n$branch_domain";
             }
@@ -1267,7 +1323,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
   <link rel="stylesheet" href="assets/css/style.css">
   <script src="assets/js/jalaali.js"></script>
   <style>
-    body{font-family:Tahoma,Arial;background:#181a1b url('assets/images/bg.jpg') no-repeat center center fixed;background-size:cover;color:#fff;position:relative}
+    body{font-family:'IRANYekanXVF',IRANYekanX,Tahoma,Arial;background:#181a1b url('assets/images/bg.jpg') no-repeat center center fixed;background-size:cover;color:#fff;position:relative}
     .overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(24,26,27,0.85);backdrop-filter:blur(6px);z-index:1}
     .centered-container{max-width:720px;margin:40px auto;position:relative;z-index:2}
     .box{ width: 100%; background:rgba(34,36,38,0.95);padding:20px;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.25)}
@@ -1519,7 +1575,11 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
         
         <!-- Member info (initially hidden) -->
         <div id="member_info" style="display:none;margin-top:20px;background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">
-          <div id="member_credit" style="background:#d32f2f;color:white;font-weight:bold;font-size:18px;padding:12px 16px;border-radius:8px;text-align:center;width:100%;box-sizing:border-box;margin-bottom:20px;"></div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px;">
+            <div id="member_credit" style="background:#d32f2f;color:white;font-weight:bold;font-size:18px;padding:12px 16px;border-radius:8px;text-align:center;width:100%;box-sizing:border-box;"></div>
+            <div id="member_pending_credit" style="background:#ff9800;color:white;font-weight:bold;font-size:16px;padding:10px 16px;border-radius:8px;text-align:center;width:100%;box-sizing:border-box;display:none;"></div>
+            <div id="member_total_credit" style="background:#4caf50;color:white;font-weight:bold;font-size:16px;padding:10px 16px;border-radius:8px;text-align:center;width:100%;box-sizing:border-box;display:none;"></div>
+          </div>
           <h4 style="margin-bottom:10px;">تاریخچه کامل تراکنش‌ها (تمام شعب و فروشگاه‌ها)</h4>
           <div id="purchase_history">
             <table style="width:100%;border-collapse:collapse;">
@@ -2673,9 +2733,24 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       postJSON({action: 'check_member', mobile: mobile})
         .then(json => {
           if (json.status === 'success') {
-            // Update credit display
-            memberCredit.textContent = 'امتیاز کل: ' + formatWithDots(json.credit_value) + ' تومان';
-            currentCreditValue = json.credit_value; // Store current credit value for calculations
+            // Update credit displays with new pending credit information
+            memberCredit.textContent = 'اعتبار قابل استفاده: ' + formatWithDots(json.available_credit_toman) + ' تومان';
+            currentCreditValue = json.available_credit_toman; // Store available credit value for calculations
+            
+            // Show pending credit if exists
+            const memberPendingCredit = document.getElementById('member_pending_credit');
+            const memberTotalCredit = document.getElementById('member_total_credit');
+            
+            if (json.pending_credit_toman > 0) {
+              memberPendingCredit.textContent = 'اعتبار در انتظار: ' + formatWithDots(json.pending_credit_toman) + ' تومان';
+              memberPendingCredit.style.display = 'block';
+              
+              memberTotalCredit.textContent = 'مجموع اعتبار: ' + formatWithDots(json.total_credit_toman) + ' تومان';
+              memberTotalCredit.style.display = 'block';
+            } else {
+              memberPendingCredit.style.display = 'none';
+              memberTotalCredit.style.display = 'none';
+            }
             
             // Clear previous transaction history
             tableBody.innerHTML = '';
@@ -2880,7 +2955,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
           }
           
           // Update displayed credit with value from server
-          document.getElementById('member_credit').textContent = 'امتیاز کل: ' + formatWithDots(json.credit_value) + ' تومان';
+          document.getElementById('member_credit').textContent = 'اعتبار قابل استفاده: ' + formatWithDots(json.credit_value) + ' تومان';
           currentCreditValue = json.credit_value;
           
           // Reset the form

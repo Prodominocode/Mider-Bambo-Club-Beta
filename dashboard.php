@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'db.php';
+require_once 'pending_credits_utils.php';
 if (!isset($_SESSION['user_id'])) {
   header('Location: index.php'); exit;
 }
@@ -12,6 +13,9 @@ if (!$user) {
   session_destroy();
   header('Location: index.php'); exit;
 }
+
+// Get combined credit information (available + pending)
+$credit_info = get_combined_credits($pdo, $user_id);
 
 // Get purchase count
 try {
@@ -69,8 +73,20 @@ try {
         </div>
         <div style="color:#b0b3b8; margin-bottom:8px; display:flex; align-items:center; justify-content:center; gap:10px">موبایل: <?php echo htmlspecialchars($user['mobile']); ?></div>
         
-        <!-- Credit display - prominent and centered -->
-        <div class="credit" id="credit" style="text-align:center; margin-bottom:20px;">اعتبار شما: <?php echo number_format(intval($user['credit'] * 5000)); ?> تومان</div>
+        <!-- Credit display - now showing both available and pending -->
+        <div style="text-align:center; margin-bottom:20px;">
+          <div class="credit" id="credit" style="margin-bottom:8px;">
+            اعتبار قابل استفاده: <?php echo number_format($credit_info['available_credit_toman']); ?> تومان
+          </div>
+          <?php if ($credit_info['pending_credit_toman'] > 0): ?>
+          <div style="background:#2a2d30; color:#ffc107; border-radius:8px; padding:8px 0; font-size:0.9rem; font-weight:600;">
+            اعتبار در انتظار: <?php echo number_format($credit_info['pending_credit_toman']); ?> تومان
+          </div>
+          <div style="font-size:0.75rem; color:#b0b3b8; margin-top:4px;">
+            (48 ساعت پس از خرید فعال می‌شود)
+          </div>
+          <?php endif; ?>
+        </div>
         
         <!-- New data fields in table-style layout -->
         <div style="display:flex; justify-content:center; margin-bottom:20px;">
