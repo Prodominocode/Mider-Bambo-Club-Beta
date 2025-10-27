@@ -1696,6 +1696,24 @@ if ($action === 'get_vcards') {
       cursor: pointer;
       font-size: 14px;
     }
+    
+    /* Desktop layout for three management buttons */
+    @media (min-width: 768px) {
+      .management-buttons-row {
+        display: flex !important;
+        flex-direction: row !important;
+        gap: 12px !important;
+      }
+      
+      .management-buttons-row .btn-large {
+        flex: 1;
+        min-width: 0;
+      }
+      
+      .management-buttons-row .btn-large .btn-text {
+        font-size: 16px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1735,48 +1753,56 @@ if ($action === 'get_vcards') {
         </div>
       </div>
       <hr>
-      <!-- Main navigation buttons -->
-      <div style="display:flex;flex-direction:column;gap:16px;margin:20px 0">
-        <button id="btn_purchase" class="btn-large">
-          <div class="btn-icon">💰</div>
-          <div class="btn-text">ثبت خرید</div>
-        </button>
-        <button id="btn_inquiry" class="btn-large">
-          <div class="btn-icon">🔍</div>
-          <div class="btn-text">استعلام</div>
-        </button>
-        <button id="btn_today_report" class="btn-large">
-          <div class="btn-icon">📊</div>
-          <div class="btn-text">تراکنش های امروز</div>
-        </button>
-        <?php 
-        // Show advisor management button only for specific managers
-        require_once 'advisor_utils.php';
-        if (can_manage_advisors($admin_mobile)): 
-        ?>
-        <button id="btn_advisor_management" class="btn-large">
-          <div class="btn-icon">👥</div>
-          <div class="btn-text">مشاور مشتری</div>
-        </button>
-        <?php endif; ?>
-        <?php 
-        // Show virtual card management button only for specific managers
-        if (can_manage_vcards($admin_mobile)): 
-        ?>
-        <button id="btn_vcard_management" class="btn-large">
-          <div class="btn-icon">💳</div>
-          <div class="btn-text">کارت های مجازی</div>
-        </button>
-        <?php endif; ?>
-        <?php 
-        // Show gift credit management button only for specific managers
-        if (can_manage_gift_credits($admin_mobile)): 
-        ?>
-        <button id="btn_gift_credit_management" class="btn-large">
-          <div class="btn-icon">🎁</div>
-          <div class="btn-text">اعتبار هدیه</div>
-        </button>
-        <?php endif; ?>
+      
+      <!-- Main navigation container -->
+      <div id="main_navigation" style="display:block;">
+        <!-- Main navigation buttons -->
+        <div style="display:flex;flex-direction:column;gap:16px;margin:20px 0">
+          <button id="btn_purchase" class="btn-large">
+            <div class="btn-icon">💰</div>
+            <div class="btn-text">ثبت خرید</div>
+          </button>
+          <button id="btn_inquiry" class="btn-large">
+            <div class="btn-icon">🔍</div>
+            <div class="btn-text">استعلام</div>
+          </button>
+          <button id="btn_today_report" class="btn-large">
+            <div class="btn-icon">📊</div>
+            <div class="btn-text">تراکنش های امروز</div>
+          </button>
+          
+          <!-- Management buttons row for desktop -->
+          <div class="management-buttons-row" style="display:flex;flex-direction:column;gap:16px;">
+            <?php 
+            // Show advisor management button only for specific managers
+            require_once 'advisor_utils.php';
+            if (can_manage_advisors($admin_mobile)): 
+            ?>
+            <button id="btn_advisor_management" class="btn-large">
+              <div class="btn-icon">👥</div>
+              <div class="btn-text">مشاور مشتری</div>
+            </button>
+            <?php endif; ?>
+            <?php 
+            // Show virtual card management button only for specific managers
+            if (can_manage_vcards($admin_mobile)): 
+            ?>
+            <button id="btn_vcard_management" class="btn-large">
+              <div class="btn-icon">💳</div>
+              <div class="btn-text">کارت های مجازی</div>
+            </button>
+            <?php endif; ?>
+            <?php 
+            // Show gift credit management button only for specific managers
+            if (can_manage_gift_credits($admin_mobile)): 
+            ?>
+            <button id="btn_gift_credit_management" class="btn-large">
+              <div class="btn-icon">🎁</div>
+              <div class="btn-text">اعتبار هدیه</div>
+            </button>
+            <?php endif; ?>
+          </div>
+        </div>
       </div>
       
       <!-- Purchase/subscription form (initially hidden) -->
@@ -2296,6 +2322,29 @@ if ($action === 'get_vcards') {
       });
     }
     
+    // Helper function to hide all sections and show only navigation
+    function hideAllSections() {
+      // Hide main navigation
+      document.getElementById('main_navigation').style.display = 'none';
+      
+      // Hide all forms/sections
+      const sections = [
+        'purchase_form',
+        'inquiry_form', 
+        'today_report_form',
+        'advisor_management_form',
+        'vcard_management_form',
+        'gift_credit_management_form'
+      ];
+      
+      sections.forEach(function(sectionId) {
+        const element = document.getElementById(sectionId);
+        if (element) {
+          element.style.display = 'none';
+        }
+      });
+    }
+    
     // Function to determine if the current user can delete a transaction
     function determineDeleteAccess(transaction) {
       // Manager can delete any transaction
@@ -2442,8 +2491,8 @@ if ($action === 'get_vcards') {
     var purchaseBtn = document.getElementById('btn_purchase');
     if (purchaseBtn) {
       purchaseBtn.addEventListener('click', function(){
-      document.getElementById('btn_purchase').parentNode.style.display = 'none';
-      document.getElementById('purchase_form').style.display = 'block';
+        hideAllSections();
+        document.getElementById('purchase_form').style.display = 'block';
       
       // Check if branch has multiple stores or single store
       var salesCenterSelect = document.getElementById('sub_sales_center');
@@ -2570,7 +2619,7 @@ if ($action === 'get_vcards') {
     console.log('Inquiry button found:', !!inquiryBtn);
     if (inquiryBtn) {
       inquiryBtn.addEventListener('click', function(){
-        document.getElementById('btn_inquiry').parentNode.style.display = 'none';
+        hideAllSections();
         document.getElementById('inquiry_form').style.display = 'block';
       });
     } else {
@@ -2578,7 +2627,7 @@ if ($action === 'get_vcards') {
     }
     
     document.getElementById('btn_today_report').addEventListener('click', function(){
-      document.getElementById('btn_today_report').parentNode.style.display = 'none';
+      hideAllSections();
       document.getElementById('today_report_form').style.display = 'block';
       
       // Explicitly load today's data when button is clicked with Tehran timezone
@@ -2599,12 +2648,12 @@ if ($action === 'get_vcards') {
     // Back buttons
     document.getElementById('back_to_menu').addEventListener('click', function(){
       document.getElementById('purchase_form').style.display = 'none';
-      document.getElementById('btn_purchase').parentNode.style.display = 'flex';
+      document.getElementById('main_navigation').style.display = 'grid';
     });
     
     document.getElementById('back_to_menu_inquiry').addEventListener('click', function(){
       document.getElementById('inquiry_form').style.display = 'none';
-      document.getElementById('btn_inquiry').parentNode.style.display = 'flex';
+      document.getElementById('main_navigation').style.display = 'grid';
       // Reset the form when going back to menu
       document.getElementById('inquiry_mobile').value = '';
       document.getElementById('inquiry_msg').textContent = '';
@@ -2613,7 +2662,7 @@ if ($action === 'get_vcards') {
     
     document.getElementById('back_to_menu_report').addEventListener('click', function(){
       document.getElementById('today_report_form').style.display = 'none';
-      document.getElementById('btn_today_report').parentNode.style.display = 'flex';
+      document.getElementById('main_navigation').style.display = 'grid';
     });
     
     // Advisor management button and functions
@@ -2626,7 +2675,7 @@ if ($action === 'get_vcards') {
     var advisorBtn = document.getElementById('btn_advisor_management');
     if (advisorBtn) {
       advisorBtn.addEventListener('click', function(){
-        document.getElementById('btn_advisor_management').parentNode.style.display = 'none';
+        hideAllSections();
         document.getElementById('advisor_management_form').style.display = 'block';
         loadAdvisorsData();
       });
@@ -2635,8 +2684,8 @@ if ($action === 'get_vcards') {
     var backToMenuAdvisor = document.getElementById('back_to_menu_advisor');
     if (backToMenuAdvisor) {
       backToMenuAdvisor.addEventListener('click', function(){
-        document.getElementById('advisor_management_form').style.display = 'none';
-        document.getElementById('btn_advisor_management').parentNode.style.display = 'flex';
+        hideAllSections();
+        document.getElementById('main_navigation').style.display = 'grid';
         resetAdvisorForm();
       });
     }
@@ -3017,7 +3066,7 @@ if ($action === 'get_vcards') {
     var vcardBtn = document.getElementById('btn_vcard_management');
     if (vcardBtn) {
       vcardBtn.addEventListener('click', function(){
-        document.getElementById('btn_vcard_management').parentNode.style.display = 'none';
+        hideAllSections();
         document.getElementById('vcard_management_form').style.display = 'block';
         loadVCardsData();
       });
@@ -3026,8 +3075,8 @@ if ($action === 'get_vcards') {
     var backToMenuVcard = document.getElementById('back_to_menu_vcard');
     if (backToMenuVcard) {
       backToMenuVcard.addEventListener('click', function(){
-        document.getElementById('vcard_management_form').style.display = 'none';
-        document.getElementById('btn_vcard_management').parentNode.style.display = 'flex';
+        hideAllSections();
+        document.getElementById('main_navigation').style.display = 'grid';
         resetVCardForm();
       });
     }
@@ -3251,7 +3300,7 @@ if ($action === 'get_vcards') {
     var giftCreditBtn = document.getElementById('btn_gift_credit_management');
     if (giftCreditBtn) {
       giftCreditBtn.addEventListener('click', function(){
-        document.getElementById('btn_gift_credit_management').parentNode.style.display = 'none';
+        hideAllSections();
         document.getElementById('gift_credit_management_form').style.display = 'block';
         loadGiftCreditsData();
       });
@@ -3260,8 +3309,8 @@ if ($action === 'get_vcards') {
     var backToMenuGiftCredit = document.getElementById('back_to_menu_gift_credit');
     if (backToMenuGiftCredit) {
       backToMenuGiftCredit.addEventListener('click', function(){
-        document.getElementById('gift_credit_management_form').style.display = 'none';
-        document.getElementById('btn_gift_credit_management').parentNode.style.display = 'flex';
+        hideAllSections();
+        document.getElementById('main_navigation').style.display = 'grid';
         resetGiftCreditForm();
       });
     }

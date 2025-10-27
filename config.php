@@ -70,5 +70,4 @@ define('BRANCH_CONFIG', serialize([
 	]
 ]));
 
-// Debug mode - set to false in production
-define('DEBUG_MODE', false);
+?>
