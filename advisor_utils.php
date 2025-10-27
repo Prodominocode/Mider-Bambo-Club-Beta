@@ -13,7 +13,7 @@ require_once 'branch_utils.php';
  * @return bool True if admin can manage advisors
  */
 function can_manage_advisors($admin_mobile) {
-    $allowed_managers = ['09119246366', '09194467966'];
+    $allowed_managers = ['09119246366', '09194467966','09119012010'];
     return in_array(norm_digits($admin_mobile), $allowed_managers);
 }
 

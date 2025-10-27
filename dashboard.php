@@ -50,6 +50,22 @@ try {
     $total_used_credit = 0;
   }
 }
+
+// Get total gift credits received
+$total_gift_credits = 0;
+$total_gift_credits_toman = 0;
+try {
+  require_once 'gift_credit_utils.php';
+  $gift_credits_stmt = $pdo->prepare("SELECT SUM(credit_amount) as total_credits, SUM(gift_amount_toman) as total_toman FROM gift_credits WHERE mobile=? AND active=1");
+  $gift_credits_stmt->execute([$user['mobile']]);
+  $gift_credits_result = $gift_credits_stmt->fetch();
+  $total_gift_credits = $gift_credits_result['total_credits'] ? (float)$gift_credits_result['total_credits'] : 0;
+  $total_gift_credits_toman = $gift_credits_result['total_toman'] ? (float)$gift_credits_result['total_toman'] : 0;
+} catch (Exception $e) {
+  // Gift credits might not exist yet, continue with 0
+  $total_gift_credits = 0;
+  $total_gift_credits_toman = 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -101,6 +117,14 @@ try {
                 <div style="font-size:1.1em; font-weight:bold; color:#ff5252;"><?php echo number_format($total_used_credit); ?> تومان</div>
               </td>
             </tr>
+            <?php if ($total_gift_credits > 0): ?>
+            <tr>
+              <td colspan="2" style="padding:12px 15px; text-align:center; border-top:1px solid #2a2d30;">
+                <div style="font-size:0.9em; color:#b0b3b8; margin-bottom:5px;">اعتبار هدیه دریافتی 🎁</div>
+                <div style="font-size:1.1em; font-weight:bold; color:#ffc107;"><?php echo number_format($total_gift_credits); ?> اعتبار <small style="color:#c8a850;">(<?php echo number_format($total_gift_credits_toman); ?> تومان)</small></div>
+              </td>
+            </tr>
+            <?php endif; ?>
           </table>
         </div>
         
@@ -138,7 +162,7 @@ try {
           <button id="purchases-back" class="small-logout">بازگشت</button>
         </div>
         <div style="background:#0f1112; padding:8px; border-radius:8px; margin-bottom:8px;">
-          <div style="display:flex; align-items:center; gap:8px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center;">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4caf50" stroke-width="2" style="margin-left:4px;">
                 <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -151,6 +175,10 @@ try {
                 <line x1="5" y1="12" x2="19" y2="12"></line>
               </svg>
               <span style="color:#ff5252; font-size:0.9em;">استفاده از اعتبار</span>
+            </div>
+            <div style="display:flex; align-items:center; margin-right:10px;">
+              <span style="margin-left:4px; font-size:14px;">🎁</span>
+              <span style="color:#ffc107; font-size:0.9em;">اعتبار هدیه</span>
             </div>
           </div>
         </div>
@@ -385,30 +413,71 @@ try {
                 var jalaliDate = formatToJalali(date);
                 var amt = parseInt(t.amount || 0);
                 var isNegative = amt < 0;
-                var transactionType = t.type === 'usage' ? 'استفاده اعتبار' : 'افزایش اعتبار';
+                var isGiftCredit = t.type === 'gift_credit';
+                var transactionType = t.type === 'usage' ? 'استفاده اعتبار' : (isGiftCredit ? 'اعتبار هدیه' : 'افزایش اعتبار');
                 
                 // Extract just the day part from the jalali date
                 var dayParts = jalaliDate.split('/');
                 var dayOnly = dayParts.length === 3 ? dayParts[2] : '';
                 
+                var bgColor = 'rgba(76,175,80,0.05)'; // Default green for credit increase
+                if (isNegative) {
+                  bgColor = 'rgba(255,82,82,0.05)'; // Red for credit usage
+                } else if (isGiftCredit) {
+                  bgColor = 'rgba(255,193,7,0.05)'; // Gold for gift credits
+                }
+                
                 html += '<li style="padding:12px;border-bottom:1px solid #222;display:flex;justify-content:space-between;align-items:center;' + 
-                       (isNegative ? 'background:rgba(255,82,82,0.05);' : 'background:rgba(76,175,80,0.05);') + '">';
+                       'background:' + bgColor + ';">';
                 
                 // Left side: date and transaction type
                 html += '<div style="display:flex;align-items:center;">';
                 
-                // Day circle
-                html += '<div style="width:36px;height:36px;border-radius:50%;background:' + (isNegative ? '#331111' : '#0F2213') + 
-                       ';color:' + (isNegative ? '#ff5252' : '#4caf50') + 
-                       ';display:flex;align-items:center;justify-content:center;margin-left:10px;font-weight:bold;">' + dayOnly + '</div>';
+                // Day circle with appropriate color
+                var circleColor = '#0F2213'; // Default green background
+                var textColor = '#4caf50'; // Default green text
+                if (isNegative) {
+                  circleColor = '#331111';
+                  textColor = '#ff5252';
+                } else if (isGiftCredit) {
+                  circleColor = '#2d2311';
+                  textColor = '#ffc107';
+                }
+                
+                html += '<div style="width:36px;height:36px;border-radius:50%;background:' + circleColor + 
+                       ';color:' + textColor + 
+                       ';display:flex;align-items:center;justify-content:center;margin-left:10px;font-weight:bold;">';
+                
+                if (isGiftCredit) {
+                  html += '🎁'; // Gift emoji for gift credits
+                } else {
+                  html += dayOnly;
+                }
+                
+                html += '</div>';
                 
                 html += '<div>';
-                html += '<div style="font-weight:500;">' + (isNegative ? 'کسر از حساب' : 'افزایش اعتبار') + '</div>';
+                
+                // Transaction type with appropriate label
+                var transLabel = 'افزایش اعتبار';
+                if (isNegative) {
+                  transLabel = 'کسر از حساب';
+                } else if (isGiftCredit) {
+                  transLabel = 'اعتبار هدیه';
+                }
+                
+                html += '<div style="font-weight:500;">' + transLabel + '</div>';
                 html += '<div style="font-size:0.8em;color:#b0b3b8;margin-top:2px;">' + jalaliDate + '</div>';
+                
+                // Add gift notes if available
+                if (isGiftCredit && t.notes) {
+                  html += '<div style="font-size:0.75em;color:#aaa;margin-top:2px;">' + t.notes + '</div>';
+                }
+                
                 html += '</div>';
                 html += '</div>';
                 
-                // Right side: amount with styling based on positive/negative
+                // Right side: amount with styling based on positive/negative/gift
                 if (isNegative) {
                   var absAmt = Math.abs(amt);
                   html += '<strong style="color:#ff5252;display:flex;align-items:center;direction:ltr;">';
@@ -421,6 +490,21 @@ try {
                   }
                   
                   html += '</strong>';
+                } else if (isGiftCredit) {
+                  html += '<div style="color:#ffc107;text-align:left;direction:ltr;">';
+                  html += '<strong style="display:flex;align-items:center;">';
+                  html += '<span style="margin-left:3px;">+</span>';
+                  html += Math.floor(amt).toLocaleString() + ' اعتبار';
+                  html += '</strong>';
+                  
+                  // Show Toman amount if available
+                  if (t.gift_amount_toman) {
+                    html += '<div style="font-size:0.8em;color:#c8a850;margin-top:2px;">';
+                    html += '(' + Math.floor(t.gift_amount_toman).toLocaleString() + ' تومان)';
+                    html += '</div>';
+                  }
+                  
+                  html += '</div>';
                 } else {
                   html += '<strong style="color:#4caf50;display:flex;align-items:center;direction:ltr;">';
                   html += '<span style="margin-left:3px;">+</span>';

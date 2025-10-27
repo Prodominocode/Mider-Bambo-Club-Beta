@@ -85,7 +85,30 @@ try {
         }
     }
     
-    // 3. Sort combined records by date (newest first)
+    // 3. Get gift credits (positive credits) if mobile is available
+    if ($mobile) {
+        $stmt = $pdo->prepare('
+            SELECT gift_amount_toman, credit_amount, created_at as date, admin_number, notes, "gift_credit" as type
+            FROM gift_credits 
+            WHERE mobile = ? AND active = 1
+        ');
+        $stmt->execute([$mobile]);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $transactions[] = [
+                'amount' => (int)$row['credit_amount'], // Positive amount (credit added)
+                'date' => $row['date'],
+                'type' => 'gift_credit',
+                'gift_amount_toman' => (float)$row['gift_amount_toman'],
+                'admin_number' => $row['admin_number'],
+                'notes' => $row['notes'],
+                'is_refund' => false,
+                'branch_id' => 0, // Gift credits are not branch-specific
+                'sales_center_id' => 0
+            ];
+        }
+    }
+    
+    // 4. Sort combined records by date (newest first)
     usort($transactions, function($a, $b) {
         return strtotime($b['date']) - strtotime($a['date']);
     });

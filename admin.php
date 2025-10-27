@@ -6,6 +6,8 @@ require_once 'config.php';
 require_once 'db.php';
 require_once 'branch_utils.php';
 require_once 'pending_credits_utils.php';
+require_once 'vcard_utils.php';
+require_once 'gift_credit_utils.php';
 
 // Set time zone to Tehran for all date/time operations
 date_default_timezone_set('Asia/Tehran');
@@ -681,13 +683,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
         
         try {
             // Check if member exists and get current credit
-            $stmt = $pdo->prepare('SELECT id, credit FROM subscribers WHERE mobile = ? LIMIT 1');
+            $stmt = $pdo->prepare('SELECT id, credit, vcard_number FROM subscribers WHERE mobile = ? LIMIT 1');
             $stmt->execute([$mobile]);
             $member = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$member) {
                 echo json_encode(['status'=>'error','message'=>'not_a_member']); exit;
             }
+            
+            // Check if this is a vCard user
+            $is_vcard_user = !empty($member['vcard_number']);
             
             // Calculate credit points to subtract (convert from Toman to credit points)
             $creditToSubtract = round(($amount / 5000), 1);
@@ -716,38 +721,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
             
             $pdo->commit();
             
-            // 4. Send SMS based on is_refund flag
-            $formatted_amount = number_format($amount);
-            $formatted_remaining_credit = number_format((int)($newCredit * 5000));
-            
-            // Get appropriate message label for SMS
-            require_once 'branch_utils.php';
-            $message_label = get_message_label($branch_id, $sales_center_id);
-            
-            // Get branch domain for the website URL
-            $branch_domain = get_branch_domain($branch_id);
-            
-            if ($is_refund) {
-                $message = "$message_label
+            // 4. Send SMS based on is_refund flag (skip for vCard users)
+            $sms_sent = false;
+            if (!$is_vcard_user) {
+                $formatted_amount = number_format($amount);
+                $formatted_remaining_credit = number_format((int)($newCredit * 5000));
+                
+                // Get appropriate message label for SMS
+                require_once 'branch_utils.php';
+                $message_label = get_message_label($branch_id, $sales_center_id);
+                
+                // Get branch domain for the website URL
+                $branch_domain = get_branch_domain($branch_id);
+                
+                if ($is_refund) {
+                    $message = "$message_label
 با توجه به مرجوع کردن خریدتان مبلغ $formatted_amount تومان از اعتبار باشگاه مشتریان شما کسر شد. 
 اعتبار باقیمانده : $formatted_remaining_credit
 
 $branch_domain";
-            } else {
-                $message = "$message_label
+                } else {
+                    $message = "$message_label
 شما مبلغ $formatted_amount تومان از اعتبار باشگاه مشتریان خود را در خرید فعلی به عنوان تخفیف نقدی استفاده نمودید.
 اعتبار باقیمانده : $formatted_remaining_credit
 
 $branch_domain";
+                }
+                
+                $sms = send_kavenegar_sms($mobile, $message);
+                $sms_sent = $sms['ok'];
             }
-            
-            $sms = send_kavenegar_sms($mobile, $message);
             
             echo json_encode([
                 'status' => 'success',
                 'credit' => $newCredit,
                 'credit_value' => (int)($newCredit * 5000),
-                'sms_sent' => $sms['ok']
+                'sms_sent' => $sms_sent,
+                'is_vcard_user' => $is_vcard_user
             ]);
             exit;
         } catch (Throwable $e) {
@@ -766,14 +776,17 @@ $branch_domain";
         $branches = get_all_branches();
         
         try {
-            // Check if member exists and get credit
-            $stmt = $pdo->prepare('SELECT id, credit, branch_id FROM subscribers WHERE mobile = ? LIMIT 1');
+            // Check if member exists and get credit, including vCard information
+            $stmt = $pdo->prepare('SELECT id, credit, branch_id, vcard_number, full_name FROM subscribers WHERE mobile = ? LIMIT 1');
             $stmt->execute([$mobile]);
             $member = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$member) {
                 echo json_encode(['status'=>'error','message'=>'not_a_member']); exit;
             }
+            
+            // Check if this is a vCard user
+            $is_vcard_user = !empty($member['vcard_number']);
             
             // Get combined credit information (available + pending)
             $credit_info = get_combined_credits_by_mobile($pdo, $mobile);
@@ -864,7 +877,32 @@ $branch_domain";
                 ];
             }
             
-            // 3. Sort combined records by date (newest first)
+            // 3. Get ALL gift credits (positive credits) - FROM ALL ADMINS
+            $stmt = $pdo->prepare('
+                SELECT gift_amount_toman, credit_amount, created_at as date, admin_number, notes, "gift_credit" as type
+                FROM gift_credits 
+                WHERE mobile = ? AND active = 1
+                ORDER BY created_at DESC
+            ');
+            $stmt->execute([$mobile]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $transactions[] = [
+                    'amount' => (int)$row['credit_amount'], // Positive amount (credit added)
+                    'date' => $row['date'],
+                    'type' => 'gift_credit',
+                    'gift_amount_toman' => (float)$row['gift_amount_toman'],
+                    'branch_id' => 0, // Gift credits are not branch-specific
+                    'sales_center_id' => 0,
+                    'branch_store' => 'اعتبار هدیه',
+                    'admin_number' => $row['admin_number'],
+                    'notes' => $row['notes'],
+                    'mobile' => $mobile,
+                    'amount_display' => (string)$row['credit_amount'],
+                    'hide_amount' => false
+                ];
+            }
+            
+            // 4. Sort combined records by date (newest first)
             usort($transactions, function($a, $b) {
                 return strtotime($b['date']) - strtotime($a['date']);
             });
@@ -881,7 +919,10 @@ $branch_domain";
                 'pending_credit_toman' => $credit_info['pending_credit_toman'],
                 'total_credit_toman' => $credit_info['total_credit_toman'],
                 'pending_details' => $credit_info['pending_details'],
-                'transactions' => $transactions
+                'transactions' => $transactions,
+                'is_vcard_user' => $is_vcard_user,
+                'vcard_number' => $member['vcard_number'],
+                'full_name' => $member['full_name']
             ]);
             exit;
         } catch (Throwable $e) {
@@ -1046,9 +1087,11 @@ $branch_domain";
         $advisor_id = find_advisor_for_transaction($branch_id, $sales_center_id, $admin);
         
         try {
-            // check existing
-            $ch = $pdo->prepare('SELECT id FROM subscribers WHERE mobile = ? LIMIT 1'); $ch->execute([$mobile]); $existingId = $ch->fetchColumn();
-            if ($existingId){
+            // check existing (also check if it's a vCard user)
+            $ch = $pdo->prepare('SELECT id, vcard_number FROM subscribers WHERE mobile = ? LIMIT 1'); $ch->execute([$mobile]); $existing = $ch->fetch(PDO::FETCH_ASSOC);
+            if ($existing){
+                $existingId = $existing['id'];
+                $is_vcard_user = !empty($existing['vcard_number']);
                 if ($amount !== '' && preg_match('/^\d+$/',$amount)){
                     $pdo->beginTransaction();
                     
@@ -1160,13 +1203,21 @@ $branch_domain";
                     }
                     
                     $message = "$message_label\nاز خرید شما متشکریم.$creditMessage\nامتیاز قابل استفاده شما در باشگاه مشتریان: " . intval($newCredit * 5000) . " تومان\n$branch_domain";
-                    $sms = send_kavenegar_sms($mobile,$message);
+                    
+                    // Only send SMS if not a vCard user
+                    $sms_sent = false;
+                    if (!$is_vcard_user) {
+                        $sms = send_kavenegar_sms($mobile,$message);
+                        $sms_sent = $sms['ok'] ?? false;
+                    }
+                    
                     echo json_encode([
                         'status' => 'success',
                         'note' => 'existing_user_with_amount',
                         'new_credit' => $newCredit,
-                        'sms' => $sms,
-                        'sales_center_name' => $sales_center_name
+                        'sms' => ['ok' => $sms_sent],
+                        'sales_center_name' => $sales_center_name,
+                        'is_vcard_user' => $is_vcard_user
                     ]); exit;
                 }
                 echo json_encode(['status'=>'success','note'=>'existing_user','admin_message'=>'Subscriber is already a member.']); exit;
@@ -1312,6 +1363,218 @@ $is_manager = $is_admin && ($admin_role === 'manager');
 if ($is_admin && !isset($_SESSION['admin_role'])) {
     $_SESSION['admin_role'] = $admin_role;
     $_SESSION['is_manager'] = $is_manager;
+}
+
+// VCard management actions
+if ($action === 'get_vcards') {
+    // Admin only
+    if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+    
+    $admin_mobile = $_SESSION['admin_mobile'];
+    
+    if (!can_manage_vcards($admin_mobile)) {
+        echo json_encode(['status'=>'error','message'=>'no_permission']); exit;
+    }
+    
+    $vcards = get_all_vcard_users();
+    
+    echo json_encode([
+        'status' => 'success',
+        'vcards' => $vcards
+    ]); exit;
+    
+} elseif ($action === 'create_vcard') {
+    // Admin only
+    if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+    
+    $admin_mobile = $_SESSION['admin_mobile'];
+    
+    if (!can_manage_vcards($admin_mobile)) {
+        echo json_encode(['status'=>'error','message'=>'no_permission']); exit;
+    }
+    
+    $vcard_number = isset($_POST['vcard_number']) ? trim($_POST['vcard_number']) : '';
+    $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : null;
+    $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : null;
+    $credit_amount = isset($_POST['credit_amount']) ? (int)$_POST['credit_amount'] : 0;
+    
+    if (empty($mobile_number)) {
+        $mobile_number = null; // Let the function generate it
+    }
+    
+    if (empty($full_name)) {
+        $full_name = null;
+    }
+    
+    $result = create_vcard_user($vcard_number, $mobile_number, $full_name, $credit_amount);
+    echo json_encode($result); exit;
+    
+} elseif ($action === 'update_vcard') {
+    // Admin only
+    if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+    
+    $admin_mobile = $_SESSION['admin_mobile'];
+    
+    if (!can_manage_vcards($admin_mobile)) {
+        echo json_encode(['status'=>'error','message'=>'no_permission']); exit;
+    }
+    
+    $vcard_id = isset($_POST['vcard_id']) ? (int)$_POST['vcard_id'] : 0;
+    $vcard_number = isset($_POST['vcard_number']) ? trim($_POST['vcard_number']) : '';
+    $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : null;
+    $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : null;
+    $credit_amount = isset($_POST['credit_amount']) ? (int)$_POST['credit_amount'] : 0;
+    
+    if (empty($mobile_number)) {
+        $mobile_number = null;
+    }
+    
+    if (empty($full_name)) {
+        $full_name = null;
+    }
+    
+    if (!$vcard_id) {
+        echo json_encode(['success' => false, 'message' => 'شناسه کارت مجازی معتبر نیست']); exit;
+    }
+    
+    $result = update_vcard_user($vcard_id, $vcard_number, $mobile_number, $full_name, $credit_amount);
+    echo json_encode($result); exit;
+    
+} elseif ($action === 'toggle_vcard_status') {
+    // Admin only
+    if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+    
+    $admin_mobile = $_SESSION['admin_mobile'];
+    
+    if (!can_manage_vcards($admin_mobile)) {
+        echo json_encode(['status'=>'error','message'=>'no_permission']); exit;
+    }
+    
+    $vcard_id = isset($_POST['vcard_id']) ? (int)$_POST['vcard_id'] : 0;
+    $active = isset($_POST['active']) ? (bool)$_POST['active'] : false;
+    
+    if (!$vcard_id) {
+        echo json_encode(['success' => false, 'message' => 'شناسه کارت مجازی معتبر نیست']); exit;
+    }
+    
+    $result = set_vcard_user_active($vcard_id, $active);
+    echo json_encode($result); exit;
+    
+} elseif ($action === 'check_vcard_balance') {
+    // Simple vCard to mobile lookup for admin
+    $vcard_number = isset($_POST['vcard_number']) ? trim($_POST['vcard_number']) : '';
+    
+    if (empty($vcard_number)) {
+        echo json_encode(['success' => false, 'message' => 'شماره کارت الزامی است']); exit;
+    }
+    
+    // For admin inquiry, just find the linked mobile number
+    if (isset($_SESSION['admin_mobile'])) {
+        try {
+            if (!isset($pdo) || !$pdo) {
+                echo json_encode(['success' => false, 'message' => 'خطا در اتصال به پایگاه داده']); exit;
+            }
+            
+            // Normalize and validate vCard number
+            $normalized_vcard = norm_digits($vcard_number);
+            if (strlen($normalized_vcard) !== 16) {
+                echo json_encode(['success' => false, 'message' => 'شماره کارت باید دقیقاً 16 رقم باشد']); exit;
+            }
+            
+            // Test database connection
+            $pdo->query("SELECT 1");
+            
+            // Find the mobile number linked to this vCard
+            $stmt = $pdo->prepare('SELECT mobile, full_name FROM subscribers WHERE vcard_number = ? LIMIT 1');
+            $stmt->execute([$normalized_vcard]);
+            $vcard_user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$vcard_user) {
+                echo json_encode(['success' => false, 'message' => 'کارت یافت نشد.']); exit;
+            }
+            
+            // Return the linked mobile number for population
+            echo json_encode([
+                'success' => true,
+                'mobile' => $vcard_user['mobile'],
+                'full_name' => $vcard_user['full_name'] ?: '',
+                'vcard_number' => $normalized_vcard,
+                'message' => 'شماره موبایل کارت مجازی یافت شد'
+            ]);
+            
+        } catch (PDOException $e) {
+            error_log('Database error in vCard lookup: ' . $e->getMessage());
+            echo json_encode(['success' => false, 'message' => 'خطا در اتصال به پایگاه داده']); exit;
+        } catch (Exception $e) {
+            error_log('vCard lookup error: ' . $e->getMessage());
+            echo json_encode(['success' => false, 'message' => 'خطا در بازیابی اطلاعات کارت']); exit;
+        }
+    } else {
+        // For public inquiry, use basic function
+        try {
+            $result = get_vcard_balance_info($vcard_number);
+            echo json_encode($result);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => 'خطا در بازیابی اطلاعات کارت']);
+        }
+    }
+    exit;
+
+} elseif ($action === 'add_gift_credit') {
+    // Admin only
+    if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+    
+    $admin_mobile = $_SESSION['admin_mobile'];
+    
+    if (!can_manage_gift_credits($admin_mobile)) {
+        echo json_encode(['status'=>'error','message'=>'شما مجاز به مدیریت اعتبار هدیه نیستید']); exit;
+    }
+    
+    $mobile = isset($_POST['mobile']) ? trim($_POST['mobile']) : '';
+    $amount = isset($_POST['amount']) ? (float)$_POST['amount'] : 0;
+    $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
+    
+    $result = add_gift_credit($admin_mobile, $mobile, $amount, $notes);
+    echo json_encode($result); exit;
+
+} elseif ($action === 'get_gift_credits') {
+    // Admin only
+    if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+    
+    $admin_mobile = $_SESSION['admin_mobile'];
+    
+    if (!can_manage_gift_credits($admin_mobile)) {
+        echo json_encode(['status'=>'error','message'=>'شما مجاز به مدیریت اعتبار هدیه نیستید']); exit;
+    }
+    
+    $search_mobile = isset($_POST['search_mobile']) ? trim($_POST['search_mobile']) : null;
+    
+    $gift_credits = get_gift_credits($admin_mobile, $search_mobile, true, 100, 0);
+    
+    echo json_encode([
+        'status' => 'success',
+        'gift_credits' => $gift_credits
+    ]); exit;
+
+} elseif ($action === 'disable_gift_credit') {
+    // Admin only
+    if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+    
+    $admin_mobile = $_SESSION['admin_mobile'];
+    
+    if (!can_manage_gift_credits($admin_mobile)) {
+        echo json_encode(['status'=>'error','message'=>'شما مجاز به مدیریت اعتبار هدیه نیستید']); exit;
+    }
+    
+    $gift_credit_id = isset($_POST['gift_credit_id']) ? (int)$_POST['gift_credit_id'] : 0;
+    $refund_credit = isset($_POST['refund_credit']) ? (bool)$_POST['refund_credit'] : false;
+    
+    if (!$gift_credit_id) {
+        echo json_encode(['status' => 'error', 'message' => 'شناسه اعتبار هدیه معتبر نیست']); exit;
+    }
+    
+    $result = disable_gift_credit($admin_mobile, $gift_credit_id, $refund_credit);
+    echo json_encode($result); exit;
 }
 ?>
 <!doctype html>
@@ -1496,6 +1759,24 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
           <div class="btn-text">مشاور مشتری</div>
         </button>
         <?php endif; ?>
+        <?php 
+        // Show virtual card management button only for specific managers
+        if (can_manage_vcards($admin_mobile)): 
+        ?>
+        <button id="btn_vcard_management" class="btn-large">
+          <div class="btn-icon">💳</div>
+          <div class="btn-text">کارت های مجازی</div>
+        </button>
+        <?php endif; ?>
+        <?php 
+        // Show gift credit management button only for specific managers
+        if (can_manage_gift_credits($admin_mobile)): 
+        ?>
+        <button id="btn_gift_credit_management" class="btn-large">
+          <div class="btn-icon">🎁</div>
+          <div class="btn-text">اعتبار هدیه</div>
+        </button>
+        <?php endif; ?>
       </div>
       
       <!-- Purchase/subscription form (initially hidden) -->
@@ -1567,11 +1848,27 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
           <label>شماره موبایل مشتری</label>
           <input type="text" id="inquiry_mobile" placeholder="شماره موبایل">
         </div>
+        <div style="margin-top:8px;margin-bottom:12px;">
+          <a href="#" id="check_by_vcard" style="color:#4caf50;font-size:12px;text-decoration:underline;cursor:pointer;">بررسی با شماره کارت مجازی</a>
+        </div>
         <div style="margin-top:12px;display:flex;gap:8px">
           <button id="check_member" class="btn btn-primary">استعلام</button>
           <button id="back_to_menu_inquiry" class="btn btn-ghost">بازگشت</button>
         </div>
         <div id="inquiry_msg" class="msg"></div>
+        
+        <!-- VCard inquiry form (initially hidden) -->
+        <div id="vcard_inquiry_form" style="display:none;margin-top:20px;background:rgba(156, 39, 176, 0.1);padding:15px;border-radius:8px;border:1px solid rgba(156, 39, 176, 0.3);">
+          <h4 style="color:#e1bee7;">استعلام با شماره کارت مجازی</h4>
+          <div style="margin-bottom:12px;">
+            <label>شماره کارت 16 رقمی</label>
+            <input type="text" id="vcard_inquiry_number" placeholder="1234567890123456" maxlength="16" style="width:100%;padding:8px;border-radius:6px;border:1px solid #9c27b0;background:#0d0d0d;color:#fff;">
+          </div>
+          <div style="display:flex;gap:8px">
+            <button id="check_vcard_inquiry" class="btn" style="background:#9c27b0;color:white;">استعلام کارت</button>
+            <button id="cancel_vcard_inquiry" class="btn btn-ghost">انصراف</button>
+          </div>
+        </div>
         
         <!-- Member info (initially hidden) -->
         <div id="member_info" style="display:none;margin-top:20px;background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">
@@ -1824,6 +2121,159 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
         </div>
       </div>
       <?php endif; ?>
+      
+      <!-- Virtual Card Management Form (initially hidden) -->
+      <?php 
+      if (can_manage_vcards($admin_mobile)): 
+      ?>
+      <div id="vcard_management_form" style="display:none">
+        <div style="text-align:center;">
+          <h3>مدیریت کارت های مجازی</h3>
+        </div>
+        
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
+          <button id="add_new_vcard" class="btn btn-primary">افزودن کارت مجازی جدید</button>
+          <button id="back_to_menu_vcard" class="btn btn-ghost">بازگشت</button>
+        </div>
+        
+        <div id="vcard_msg" class="msg"></div>
+        
+        <!-- Add/Edit VCard Form (initially hidden) -->
+        <div id="vcard_form" style="display:none;margin-top:20px;background:rgba(0,0,0,0.3);padding:20px;border-radius:8px;">
+          <h4 id="vcard_form_title">افزودن کارت مجازی جدید</h4>
+          <form id="vcard_form_element">
+            <input type="hidden" id="vcard_id" value="">
+            
+            <div style="margin-bottom:12px;">
+              <label>شماره کارت 16 رقمی (الزامی)</label>
+              <input type="text" id="vcard_number" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="1234567890123456" maxlength="16">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label>شماره موبایل (اختیاری - در صورت عدم ورود، خودکار تولید می‌شود)</label>
+              <input type="text" id="vcard_mobile" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="09xxxxxxxxx">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label>نام کامل (اختیاری)</label>
+              <input type="text" id="vcard_full_name" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="نام و نام خانوادگی">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label>مبلغ اعتبار (تومان)</label>
+              <input type="text" id="vcard_credit_amount" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="مثال: 250000" inputmode="numeric">
+              <div style="font-size:12px;color:#888;margin-top:4px;">مبلغ مستقیما به اعتبار کاربر اضافه می‌شود</div>
+            </div>
+            
+            <div style="display:flex;gap:8px;margin-top:20px;">
+              <button type="submit" id="save_vcard" class="btn btn-primary">ذخیره</button>
+              <button type="button" id="cancel_vcard_form" class="btn btn-ghost">انصراف</button>
+            </div>
+          </form>
+        </div>
+        
+        <!-- VCards List -->
+        <div id="vcards_list" style="margin-top:20px;">
+          <h4>فهرست کارت های مجازی</h4>
+          <div id="vcards_container" style="background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">
+            <div id="vcards_table_container">
+              <table style="width:100%;border-collapse:collapse;" id="vcards_table">
+                <thead>
+                  <tr style="border-bottom:1px solid rgba(255,255,255,0.1)">
+                    <th style="text-align:right;padding:8px 4px;">شماره کارت</th>
+                    <th style="text-align:center;padding:8px 4px;">نام کامل</th>
+                    <th style="text-align:center;padding:8px 4px;">موبایل</th>
+                    <th style="text-align:center;padding:8px 4px;">اعتبار</th>
+                    <th style="text-align:center;padding:8px 4px;">عملیات</th>
+                  </tr>
+                </thead>
+                <tbody id="vcards_table_body">
+                  <tr><td colspan="5" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <?php endif; ?>
+      
+      <!-- Gift Credit Management Form (initially hidden) -->
+      <?php 
+      if (can_manage_gift_credits($admin_mobile)): 
+      ?>
+      <div id="gift_credit_management_form" style="display:none">
+        <div style="text-align:center;">
+          <h3>مدیریت اعتبار هدیه</h3>
+        </div>
+        
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
+          <button id="add_new_gift_credit" class="btn btn-primary">افزودن اعتبار هدیه جدید</button>
+          <button id="back_to_menu_gift_credit" class="btn btn-ghost">بازگشت</button>
+        </div>
+        
+        <div id="gift_credit_msg" class="msg"></div>
+        
+        <!-- Add Gift Credit Form (initially hidden) -->
+        <div id="gift_credit_form" style="display:none;margin-top:20px;background:rgba(0,0,0,0.3);padding:20px;border-radius:8px;">
+          <h4 id="gift_credit_form_title">افزودن اعتبار هدیه جدید</h4>
+          <form id="gift_credit_form_element">
+            
+            <div style="margin-bottom:12px;">
+              <label>شماره موبایل مشترک (الزامی)</label>
+              <input type="text" id="gift_credit_mobile" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="09xxxxxxxxx">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label>مبلغ هدیه (تومان)</label>
+              <input type="text" id="gift_credit_amount" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="مثال: 250000" inputmode="numeric">
+              <div style="font-size:12px;color:#888;margin-top:4px;">مبلغ مستقیما به اعتبار کاربر اضافه می‌شود</div>
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label>یادداشت (اختیاری)</label>
+              <textarea id="gift_credit_notes" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;resize:vertical;min-height:60px;" placeholder="توضیحات دلیل اعطای اعتبار هدیه..."></textarea>
+            </div>
+            
+            <div style="display:flex;gap:8px;margin-top:20px;">
+              <button type="submit" id="save_gift_credit" class="btn btn-primary">ذخیره</button>
+              <button type="button" id="cancel_gift_credit_form" class="btn btn-ghost">انصراف</button>
+            </div>
+          </form>
+        </div>
+        
+        <!-- Gift Credits List -->
+        <div id="gift_credits_list" style="margin-top:20px;">
+          <h4>فهرست اعتبارات هدیه</h4>
+          
+          <!-- Search and Filter -->
+          <div style="margin-bottom:15px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="text" id="gift_credit_search_mobile" style="flex:1;min-width:200px;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;" placeholder="جستجو بر اساس شماره موبایل...">
+            <button id="search_gift_credits" class="btn btn-primary">جستجو</button>
+            <button id="clear_gift_credit_search" class="btn btn-ghost">پاک کردن</button>
+          </div>
+          
+          <div id="gift_credits_container" style="background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">
+            <div id="gift_credits_table_container">
+              <table style="width:100%;border-collapse:collapse;" id="gift_credits_table">
+                <thead>
+                  <tr style="border-bottom:1px solid rgba(255,255,255,0.1)">
+                    <th style="text-align:right;padding:8px 4px;">شماره موبایل</th>
+                    <th style="text-align:center;padding:8px 4px;">نام مشترک</th>
+                    <th style="text-align:center;padding:8px 4px;">مبلغ (تومان)</th>
+                    <th style="text-align:center;padding:8px 4px;">اعتبار</th>
+                    <th style="text-align:center;padding:8px 4px;">تاریخ</th>
+                    <th style="text-align:center;padding:8px 4px;">عملیات</th>
+                  </tr>
+                </thead>
+                <tbody id="gift_credits_table_body">
+                  <tr><td colspan="6" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <?php endif; ?>
 <?php endif; ?>
     </div>
   </div>
@@ -1989,7 +2439,9 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     document.getElementById('logout').addEventListener('click', function(){ postJSON({action:'logout'}).then(()=>location.reload()); });
     
     // Main menu buttons
-    document.getElementById('btn_purchase').addEventListener('click', function(){
+    var purchaseBtn = document.getElementById('btn_purchase');
+    if (purchaseBtn) {
+      purchaseBtn.addEventListener('click', function(){
       document.getElementById('btn_purchase').parentNode.style.display = 'none';
       document.getElementById('purchase_form').style.display = 'block';
       
@@ -2007,6 +2459,7 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
         loadAdvisorsForSalesCenter(1);
       }
     });
+    }
     
     // Add sales center change listener for advisor loading (only for multiple stores)
     var salesCenterSelect = document.getElementById('sub_sales_center');
@@ -2113,10 +2566,16 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       container.innerHTML = html;
     }
     
-    document.getElementById('btn_inquiry').addEventListener('click', function(){
-      document.getElementById('btn_inquiry').parentNode.style.display = 'none';
-      document.getElementById('inquiry_form').style.display = 'block';
-    });
+    var inquiryBtn = document.getElementById('btn_inquiry');
+    console.log('Inquiry button found:', !!inquiryBtn);
+    if (inquiryBtn) {
+      inquiryBtn.addEventListener('click', function(){
+        document.getElementById('btn_inquiry').parentNode.style.display = 'none';
+        document.getElementById('inquiry_form').style.display = 'block';
+      });
+    } else {
+      console.log('Inquiry button not found');
+    }
     
     document.getElementById('btn_today_report').addEventListener('click', function(){
       document.getElementById('btn_today_report').parentNode.style.display = 'none';
@@ -2164,30 +2623,40 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     window.selectedSalesCenters = [];
     window.allSalesCentersData = [];
     
-    document.getElementById('btn_advisor_management').addEventListener('click', function(){
-      document.getElementById('btn_advisor_management').parentNode.style.display = 'none';
-      document.getElementById('advisor_management_form').style.display = 'block';
-      loadAdvisorsData();
-    });
+    var advisorBtn = document.getElementById('btn_advisor_management');
+    if (advisorBtn) {
+      advisorBtn.addEventListener('click', function(){
+        document.getElementById('btn_advisor_management').parentNode.style.display = 'none';
+        document.getElementById('advisor_management_form').style.display = 'block';
+        loadAdvisorsData();
+      });
+    }
     
-    document.getElementById('back_to_menu_advisor').addEventListener('click', function(){
-      document.getElementById('advisor_management_form').style.display = 'none';
-      document.getElementById('btn_advisor_management').parentNode.style.display = 'flex';
-      resetAdvisorForm();
-    });
+    var backToMenuAdvisor = document.getElementById('back_to_menu_advisor');
+    if (backToMenuAdvisor) {
+      backToMenuAdvisor.addEventListener('click', function(){
+        document.getElementById('advisor_management_form').style.display = 'none';
+        document.getElementById('btn_advisor_management').parentNode.style.display = 'flex';
+        resetAdvisorForm();
+      });
+    }
     
-    document.getElementById('add_new_advisor').addEventListener('click', function(){
-      resetAdvisorForm();
-      document.getElementById('advisor_form_title').textContent = 'افزودن مشاور جدید';
-      document.getElementById('advisor_form').style.display = 'block';
-    });
+    var addNewAdvisor = document.getElementById('add_new_advisor');
+    if (addNewAdvisor) {
+      addNewAdvisor.addEventListener('click', function(){
+        resetAdvisorForm();
+        document.getElementById('advisor_form_title').textContent = 'افزودن مشاور جدید';
+        document.getElementById('advisor_form').style.display = 'block';
+      });
+    }
     
-    document.getElementById('cancel_advisor_form').addEventListener('click', function(){
-      resetAdvisorForm();
-      document.getElementById('advisor_form').style.display = 'none';
-    });
-    
-    // Sales center selection logic
+    var cancelAdvisorForm = document.getElementById('cancel_advisor_form');
+    if (cancelAdvisorForm) {
+      cancelAdvisorForm.addEventListener('click', function(){
+        resetAdvisorForm();
+        document.getElementById('advisor_form').style.display = 'none';
+      });
+    }    // Sales center selection logic
     document.getElementById('available_sales_centers').addEventListener('change', function(){
       const selectedValue = this.value;
       if (selectedValue) {
@@ -2541,6 +3010,465 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
     }
     <?php endif; ?>
     
+    <?php if (can_manage_vcards($admin_mobile)): ?>
+    // VCard management event handlers
+    
+    // Add error handling to ensure elements exist
+    var vcardBtn = document.getElementById('btn_vcard_management');
+    if (vcardBtn) {
+      vcardBtn.addEventListener('click', function(){
+        document.getElementById('btn_vcard_management').parentNode.style.display = 'none';
+        document.getElementById('vcard_management_form').style.display = 'block';
+        loadVCardsData();
+      });
+    }
+    
+    var backToMenuVcard = document.getElementById('back_to_menu_vcard');
+    if (backToMenuVcard) {
+      backToMenuVcard.addEventListener('click', function(){
+        document.getElementById('vcard_management_form').style.display = 'none';
+        document.getElementById('btn_vcard_management').parentNode.style.display = 'flex';
+        resetVCardForm();
+      });
+    }
+    
+    var addNewVcard = document.getElementById('add_new_vcard');
+    if (addNewVcard) {
+      addNewVcard.addEventListener('click', function(){
+        resetVCardForm();
+        document.getElementById('vcard_form_title').textContent = 'افزودن کارت مجازی جدید';
+        document.getElementById('vcard_form').style.display = 'block';
+      });
+    }
+    
+    var cancelVcardForm = document.getElementById('cancel_vcard_form');
+    if (cancelVcardForm) {
+      cancelVcardForm.addEventListener('click', function(){
+        resetVCardForm();
+        document.getElementById('vcard_form').style.display = 'none';
+      });
+    }
+    
+    // VCard form submission
+    var vcardFormElement = document.getElementById('vcard_form_element');
+    if (vcardFormElement) {
+      vcardFormElement.addEventListener('submit', function(e){
+      e.preventDefault();
+      
+      const vcard_id = document.getElementById('vcard_id').value;
+      const vcard_number = document.getElementById('vcard_number').value.trim();
+      const vcard_mobile = document.getElementById('vcard_mobile').value.trim();
+      const vcard_full_name = document.getElementById('vcard_full_name').value.trim();
+      const vcard_credit_amount = extractRawNumber(document.getElementById('vcard_credit_amount').value);
+      
+      const msg = document.getElementById('vcard_msg');
+      msg.textContent = '';
+      
+      if (!vcard_number) {
+        msg.textContent = 'شماره کارت الزامی است';
+        msg.style.color = '#ff5252';
+        return;
+      }
+      
+      if (vcard_number.length !== 16 || !/^\d+$/.test(vcard_number)) {
+        msg.textContent = 'شماره کارت باید دقیقاً 16 رقم باشد';
+        msg.style.color = '#ff5252';
+        return;
+      }
+      
+      const action = vcard_id ? 'update_vcard' : 'create_vcard';
+      const requestData = {
+        action: action,
+        vcard_number: vcard_number,
+        mobile_number: vcard_mobile,
+        full_name: vcard_full_name,
+        credit_amount: vcard_credit_amount || '0'
+      };
+      
+      if (vcard_id) {
+        requestData.vcard_id = vcard_id;
+      }
+      
+      postJSON(requestData).then(json => {
+        if (json.status === 'success') {
+          msg.textContent = json.message;
+          msg.style.color = '#4caf50';
+          resetVCardForm();
+          document.getElementById('vcard_form').style.display = 'none';
+          loadVCardsData();
+        } else {
+          msg.textContent = json.message || 'خطا در عملیات';
+          msg.style.color = '#ff5252';
+        }
+      }).catch(() => {
+          msg.textContent = 'خطا در اتصال به سرور';
+          msg.style.color = '#ff5252';
+        });
+      });
+    }
+    
+    // VCard credit amount formatting
+    var vcardCreditAmount = document.getElementById('vcard_credit_amount');
+    if (vcardCreditAmount) {
+      vcardCreditAmount.addEventListener('input', function(){
+        let value = extractRawNumber(this.value);
+        if (value) {
+          this.value = formatWithDots(value);
+        }
+      });
+    }    // VCard management functions
+    function loadVCardsData() {
+      const msg = document.getElementById('vcard_msg');
+      const tableBody = document.getElementById('vcards_table_body');
+      
+      msg.textContent = '';
+      tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;">در حال بارگذاری...</td></tr>';
+      
+      postJSON({action: 'get_vcards'}).then(json => {
+        if (json.status === 'success') {
+          if (json.vcards && json.vcards.length > 0) {
+            let vcardsHtml = '';
+            json.vcards.forEach(vcard => {
+              const creditToman = (vcard.credit * 5000).toLocaleString();
+              vcardsHtml += `
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                  <td style="padding:8px 4px;font-family:monospace;">${vcard.vcard_number}</td>
+                  <td style="padding:8px 4px;text-align:center;">${vcard.full_name || '-'}</td>
+                  <td style="padding:8px 4px;text-align:center;">${vcard.mobile}</td>
+                  <td style="padding:8px 4px;text-align:center;">${creditToman} تومان (${vcard.credit} امتیاز)</td>
+                  <td style="padding:8px 4px;text-align:center;">
+                    <button class="btn-edit-vcard" data-id="${vcard.id}" style="background:#2196f3;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;margin-left:4px;">ویرایش</button>
+                    <button class="btn-toggle-vcard" data-id="${vcard.id}" data-active="${vcard.full_name && !vcard.full_name.includes('[غیرفعال]') ? '1' : '0'}" style="background:${vcard.full_name && !vcard.full_name.includes('[غیرفعال]') ? '#ff9800' : '#4caf50'};color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;">${vcard.full_name && !vcard.full_name.includes('[غیرفعال]') ? 'غیرفعال' : 'فعال'}</button>
+                  </td>
+                </tr>
+              `;
+            });
+            tableBody.innerHTML = vcardsHtml;
+            
+            // Add event listeners for edit and toggle buttons
+            document.querySelectorAll('.btn-edit-vcard').forEach(btn => {
+              btn.addEventListener('click', function() {
+                editVCard(this.dataset.id, json.vcards);
+              });
+            });
+            
+            document.querySelectorAll('.btn-toggle-vcard').forEach(btn => {
+              btn.addEventListener('click', function() {
+                toggleVCardStatus(this.dataset.id, this.dataset.active === '1');
+              });
+            });
+          } else {
+            tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;color:#b0b3b8;">هیچ کارت مجازی ثبت نشده است</td></tr>';
+          }
+        } else {
+          msg.textContent = json.message || 'خطا در دریافت اطلاعات';
+          msg.style.color = '#ff5252';
+          tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
+        }
+      }).catch(() => {
+        msg.textContent = 'خطا در اتصال به سرور';
+        msg.style.color = '#ff5252';
+        tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری</td></tr>';
+      });
+    }
+    
+    function editVCard(vcardId, vcards) {
+      const vcard = vcards.find(v => v.id == vcardId);
+      if (!vcard) return;
+      
+      document.getElementById('vcard_id').value = vcard.id;
+      document.getElementById('vcard_number').value = vcard.vcard_number;
+      
+      // Make mobile field read-only for editing existing vCards
+      const mobileField = document.getElementById('vcard_mobile');
+      const mobileLabel = mobileField.previousElementSibling;
+      mobileField.value = vcard.mobile;
+      mobileField.readOnly = true;
+      mobileField.style.backgroundColor = '#333';
+      mobileField.style.color = '#aaa';
+      mobileField.title = 'شماره موبایل کارت مجازی قابل ویرایش نیست';
+      if (mobileLabel) {
+        mobileLabel.textContent = 'شماره موبایل (غیرقابل ویرایش)';
+      }
+      
+      document.getElementById('vcard_full_name').value = (vcard.full_name || '').replace(' [غیرفعال]', '');
+      document.getElementById('vcard_credit_amount').value = formatWithDots(vcard.credit * 5000);
+      
+      document.getElementById('vcard_form_title').textContent = 'ویرایش کارت مجازی';
+      document.getElementById('vcard_form').style.display = 'block';
+    }
+    
+    function toggleVCardStatus(vcardId, isActive) {
+      const msg = document.getElementById('vcard_msg');
+      const action = isActive ? 'غیرفعال' : 'فعال';
+      
+      if (confirm(`آیا از ${action} کردن این کارت مجازی اطمینان دارید؟`)) {
+        postJSON({
+          action: 'toggle_vcard_status',
+          vcard_id: vcardId,
+          active: !isActive
+        }).then(json => {
+          if (json.status === 'success') {
+            msg.textContent = json.message;
+            msg.style.color = '#4caf50';
+            loadVCardsData();
+          } else {
+            msg.textContent = json.message || 'خطا در تغییر وضعیت';
+            msg.style.color = '#ff5252';
+          }
+        }).catch(() => {
+          msg.textContent = 'خطا در اتصال به سرور';
+          msg.style.color = '#ff5252';
+        });
+      }
+    }
+    
+    function resetVCardForm() {
+      document.getElementById('vcard_id').value = '';
+      document.getElementById('vcard_number').value = '';
+      
+      // Reset mobile field to be editable for new vCards
+      const mobileField = document.getElementById('vcard_mobile');
+      const mobileLabel = mobileField.previousElementSibling;
+      mobileField.value = '';
+      mobileField.readOnly = false;
+      mobileField.style.backgroundColor = '#0d0d0d';
+      mobileField.style.color = '#fff';
+      mobileField.title = '';
+      if (mobileLabel) {
+        mobileLabel.textContent = 'شماره موبایل (اختیاری - در صورت عدم ورود، خودکار تولید می‌شود)';
+      }
+      
+      document.getElementById('vcard_full_name').value = '';
+      document.getElementById('vcard_credit_amount').value = '';
+      document.getElementById('vcard_msg').textContent = '';
+    }
+    <?php endif; ?>
+    
+    <?php if (can_manage_gift_credits($admin_mobile)): ?>
+    // Gift Credit management event handlers
+    
+    var giftCreditBtn = document.getElementById('btn_gift_credit_management');
+    if (giftCreditBtn) {
+      giftCreditBtn.addEventListener('click', function(){
+        document.getElementById('btn_gift_credit_management').parentNode.style.display = 'none';
+        document.getElementById('gift_credit_management_form').style.display = 'block';
+        loadGiftCreditsData();
+      });
+    }
+    
+    var backToMenuGiftCredit = document.getElementById('back_to_menu_gift_credit');
+    if (backToMenuGiftCredit) {
+      backToMenuGiftCredit.addEventListener('click', function(){
+        document.getElementById('gift_credit_management_form').style.display = 'none';
+        document.getElementById('btn_gift_credit_management').parentNode.style.display = 'flex';
+        resetGiftCreditForm();
+      });
+    }
+    
+    var addNewGiftCredit = document.getElementById('add_new_gift_credit');
+    if (addNewGiftCredit) {
+      addNewGiftCredit.addEventListener('click', function(){
+        resetGiftCreditForm();
+        document.getElementById('gift_credit_form_title').textContent = 'افزودن اعتبار هدیه جدید';
+        document.getElementById('gift_credit_form').style.display = 'block';
+      });
+    }
+    
+    var cancelGiftCreditForm = document.getElementById('cancel_gift_credit_form');
+    if (cancelGiftCreditForm) {
+      cancelGiftCreditForm.addEventListener('click', function(){
+        resetGiftCreditForm();
+        document.getElementById('gift_credit_form').style.display = 'none';
+      });
+    }
+    
+    // Set up gift credit amount input formatting
+    const giftCreditAmountInput = document.getElementById('gift_credit_amount');
+    if (giftCreditAmountInput) {
+      giftCreditAmountInput.addEventListener('input', function(){
+        var raw = extractRawNumber(this.value);
+        var formatted = formatWithDots(raw);
+        this.value = formatted;
+      });
+      
+      giftCreditAmountInput.addEventListener('blur', function(){
+        this.value = formatWithDots(extractRawNumber(this.value));
+      });
+    }
+    
+    // Gift Credit form submission
+    var giftCreditFormElement = document.getElementById('gift_credit_form_element');
+    if (giftCreditFormElement) {
+      giftCreditFormElement.addEventListener('submit', function(e){
+        e.preventDefault();
+        
+        const mobile = document.getElementById('gift_credit_mobile').value.trim();
+        const amount = extractRawNumber(document.getElementById('gift_credit_amount').value);
+        const notes = document.getElementById('gift_credit_notes').value.trim();
+        
+        const msg = document.getElementById('gift_credit_msg');
+        msg.textContent = '';
+        
+        if (!mobile) {
+          msg.textContent = 'شماره موبایل الزامی است';
+          msg.style.color = '#ff5252';
+          return;
+        }
+        
+        if (!amount || parseInt(amount) <= 0) {
+          msg.textContent = 'مبلغ هدیه باید بیشتر از صفر باشد';
+          msg.style.color = '#ff5252';
+          return;
+        }
+        
+        const requestData = {
+          action: 'add_gift_credit',
+          mobile: mobile,
+          amount: amount,
+          notes: notes
+        };
+        
+        postJSON(requestData).then(json => {
+          if (json.status === 'success') {
+            msg.textContent = json.message;
+            msg.style.color = '#4caf50';
+            resetGiftCreditForm();
+            document.getElementById('gift_credit_form').style.display = 'none';
+            loadGiftCreditsData();
+          } else {
+            msg.textContent = json.message || 'خطا در ثبت اعتبار هدیه';
+            msg.style.color = '#ff5252';
+          }
+        }).catch(() => {
+          msg.textContent = 'خطا در اتصال به سرور';
+          msg.style.color = '#ff5252';
+        });
+      });
+    }
+    
+    // Gift Credit search functionality
+    var searchGiftCreditsBtn = document.getElementById('search_gift_credits');
+    if (searchGiftCreditsBtn) {
+      searchGiftCreditsBtn.addEventListener('click', function(){
+        const searchMobile = document.getElementById('gift_credit_search_mobile').value.trim();
+        loadGiftCreditsData(searchMobile);
+      });
+    }
+    
+    var clearGiftCreditSearchBtn = document.getElementById('clear_gift_credit_search');
+    if (clearGiftCreditSearchBtn) {
+      clearGiftCreditSearchBtn.addEventListener('click', function(){
+        document.getElementById('gift_credit_search_mobile').value = '';
+        loadGiftCreditsData();
+      });
+    }
+    
+    // Add Enter key support for search
+    var giftCreditSearchInput = document.getElementById('gift_credit_search_mobile');
+    if (giftCreditSearchInput) {
+      giftCreditSearchInput.addEventListener('keypress', function(e){
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.getElementById('search_gift_credits').click();
+        }
+      });
+    }
+    
+    // Load gift credits data
+    function loadGiftCreditsData(searchMobile = '') {
+      const requestData = {
+        action: 'get_gift_credits'
+      };
+      
+      if (searchMobile) {
+        requestData.search_mobile = searchMobile;
+      }
+      
+      postJSON(requestData).then(json => {
+        if (json.status === 'success') {
+          displayGiftCreditsTable(json.gift_credits);
+        } else {
+          document.getElementById('gift_credits_table_body').innerHTML = 
+            '<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در بارگذاری اطلاعات</td></tr>';
+        }
+      }).catch(() => {
+        document.getElementById('gift_credits_table_body').innerHTML = 
+          '<tr><td colspan="6" style="text-align:center;padding:15px;color:#ff5252;">خطا در اتصال به سرور</td></tr>';
+      });
+    }
+    
+    // Display gift credits table
+    function displayGiftCreditsTable(giftCredits) {
+      const tbody = document.getElementById('gift_credits_table_body');
+      
+      if (!giftCredits || giftCredits.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:15px;color:#888;">هیچ اعتبار هدیه ای یافت نشد</td></tr>';
+        return;
+      }
+      
+      let html = '';
+      giftCredits.forEach(gift => {
+        const date = new Date(gift.created_at);
+        const formattedDate = date.toLocaleDateString('fa-IR');
+        const formattedTime = date.toLocaleTimeString('fa-IR');
+        
+        html += `
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.1)">
+            <td style="padding:8px 4px;text-align:right;">${gift.mobile}</td>
+            <td style="padding:8px 4px;text-align:center;">${gift.subscriber_name}</td>
+            <td style="padding:8px 4px;text-align:center;">${formatWithDots(gift.gift_amount_toman)}</td>
+            <td style="padding:8px 4px;text-align:center;">${gift.credit_amount}</td>
+            <td style="padding:8px 4px;text-align:center;">${formattedDate}<br><small style="color:#888;">${formattedTime}</small></td>
+            <td style="padding:8px 4px;text-align:center;">
+              <button onclick="disableGiftCredit(${gift.id})" 
+                      class="btn btn-ghost" 
+                      style="padding:4px 8px;font-size:12px;color:#ff5252;border-color:#ff5252;"
+                      ${!gift.active ? 'disabled' : ''}>
+                ${gift.active ? 'غیرفعال' : 'غیرفعال شده'}
+              </button>
+              ${gift.notes ? `<br><small style="color:#888;" title="${gift.notes}">یادداشت</small>` : ''}
+            </td>
+          </tr>
+        `;
+      });
+      
+      tbody.innerHTML = html;
+    }
+    
+    // Disable gift credit function
+    function disableGiftCredit(giftCreditId) {
+      const msg = document.getElementById('gift_credit_msg');
+      
+      if (confirm('آیا از غیرفعال کردن این اعتبار هدیه اطمینان دارید؟\n\nتوجه: اعتبار از حساب کاربر کسر نخواهد شد.')) {
+        postJSON({
+          action: 'disable_gift_credit',
+          gift_credit_id: giftCreditId,
+          refund_credit: false
+        }).then(json => {
+          if (json.status === 'success') {
+            msg.textContent = json.message;
+            msg.style.color = '#4caf50';
+            loadGiftCreditsData();
+          } else {
+            msg.textContent = json.message || 'خطا در غیرفعال کردن اعتبار هدیه';
+            msg.style.color = '#ff5252';
+          }
+        }).catch(() => {
+          msg.textContent = 'خطا در اتصال به سرور';
+          msg.style.color = '#ff5252';
+        });
+      }
+    }
+    
+    function resetGiftCreditForm() {
+      document.getElementById('gift_credit_mobile').value = '';
+      document.getElementById('gift_credit_amount').value = '';
+      document.getElementById('gift_credit_notes').value = '';
+      document.getElementById('gift_credit_msg').textContent = '';
+    }
+    <?php endif; ?>
+    
     document.getElementById('refresh_today_report').addEventListener('click', function(){
       loadTodayReport();
     });
@@ -2707,6 +3635,34 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
                 refundSpan.style.color = '#ff9800';
                 amountCell.appendChild(refundSpan);
               }
+            } else if (transaction.type === 'gift_credit') {
+              // Gift credit (positive amount)
+              amountCell.innerHTML = '<span style="color:#4caf50;">+' + formatWithDots(transaction.amount) + '</span>';
+              
+              // Add a gift icon for gift credits
+              const iconSpan = document.createElement('span');
+              iconSpan.textContent = '🎁';  // Gift emoji
+              iconSpan.style.marginLeft = '5px';
+              amountCell.appendChild(iconSpan);
+              
+              // Add gift amount in Toman if available
+              if (transaction.gift_amount_toman) {
+                const giftSpan = document.createElement('div');
+                giftSpan.textContent = '(' + formatWithDots(transaction.gift_amount_toman) + ' تومان)';
+                giftSpan.style.fontSize = '0.8em';
+                giftSpan.style.color = '#81c784';
+                amountCell.appendChild(giftSpan);
+              }
+              
+              // Add notes if available
+              if (transaction.notes) {
+                const notesSpan = document.createElement('div');
+                notesSpan.textContent = transaction.notes;
+                notesSpan.style.fontSize = '0.75em';
+                notesSpan.style.color = '#aaa';
+                notesSpan.style.marginTop = '2px';
+                amountCell.appendChild(notesSpan);
+              }
             } else {
               // Positive amount (purchase)
               amountCell.textContent = formatWithDots(transaction.amount);
@@ -2733,15 +3689,27 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
       postJSON({action: 'check_member', mobile: mobile})
         .then(json => {
           if (json.status === 'success') {
-            // Update credit displays with new pending credit information
-            memberCredit.textContent = 'اعتبار قابل استفاده: ' + formatWithDots(json.available_credit_toman) + ' تومان';
+            // Check if this is a vCard user and update display accordingly
+            if (json.is_vcard_user && json.vcard_number) {
+              memberCredit.innerHTML = '💳 کارت مجازی: ' + formatWithDots(json.available_credit_toman) + ' تومان';
+              memberCredit.style.background = '#9c27b0'; // Purple background for vCard
+              memberCredit.innerHTML += '<br><small style="font-size:12px;opacity:0.8;">شماره کارت: ' + json.vcard_number + '</small>';
+              if (json.full_name) {
+                memberCredit.innerHTML += '<br><small style="font-size:12px;opacity:0.8;">نام: ' + json.full_name + '</small>';
+              }
+            } else {
+              // Regular user display
+              memberCredit.textContent = 'اعتبار قابل استفاده: ' + formatWithDots(json.available_credit_toman) + ' تومان';
+              memberCredit.style.background = '#d32f2f'; // Red background for regular users
+            }
+            
             currentCreditValue = json.available_credit_toman; // Store available credit value for calculations
             
-            // Show pending credit if exists
+            // Show pending credit if exists (not applicable for vCard users)
             const memberPendingCredit = document.getElementById('member_pending_credit');
             const memberTotalCredit = document.getElementById('member_total_credit');
             
-            if (json.pending_credit_toman > 0) {
+            if (json.pending_credit_toman > 0 && !json.is_vcard_user) {
               memberPendingCredit.textContent = 'اعتبار در انتظار: ' + formatWithDots(json.pending_credit_toman) + ' تومان';
               memberPendingCredit.style.display = 'block';
               
@@ -2778,6 +3746,70 @@ if ($is_admin && !isset($_SESSION['admin_role'])) {
         })
         .catch(error => {
           console.error('Inquiry error:', error);
+          msg.textContent = 'خطا در اتصال به سرور';
+        });
+    });
+    
+    // VCard inquiry handlers
+    document.getElementById('check_by_vcard').addEventListener('click', function(e){
+      e.preventDefault(); // Prevent default link behavior
+      document.getElementById('vcard_inquiry_form').style.display = 'block';
+      document.getElementById('vcard_inquiry_number').focus();
+    });
+    
+    document.getElementById('cancel_vcard_inquiry').addEventListener('click', function(){
+      document.getElementById('vcard_inquiry_form').style.display = 'none';
+      document.getElementById('vcard_inquiry_number').value = '';
+    });
+    
+    document.getElementById('check_vcard_inquiry').addEventListener('click', function(){
+      const vcardNumber = document.getElementById('vcard_inquiry_number').value.trim();
+      const msg = document.getElementById('inquiry_msg');
+      
+      msg.textContent = '';
+      
+      if (!vcardNumber) {
+        msg.textContent = 'لطفاً شماره کارت 16 رقمی را وارد کنید.';
+        return;
+      }
+      
+      if (vcardNumber.length !== 16 || !/^\d+$/.test(vcardNumber)) {
+        msg.textContent = 'شماره کارت باید دقیقاً 16 رقم باشد.';
+        return;
+      }
+      
+      // Show loading state
+      msg.textContent = 'در حال جستجو...';
+      
+      postJSON({action: 'check_vcard_balance', vcard_number: vcardNumber})
+        .then(json => {
+          if (json.success && json.mobile) {
+            // Hide vCard inquiry form
+            document.getElementById('vcard_inquiry_form').style.display = 'none';
+            
+            // Populate the mobile number field
+            document.getElementById('inquiry_mobile').value = json.mobile;
+            
+            // Clear and show instruction message
+            msg.innerHTML = '<div style="background:#4caf50;color:white;padding:12px;border-radius:8px;margin:15px 0;text-align:center;">' +
+                           '<strong>✓ شماره موبایل کارت مجازی یافت شد</strong><br>' +
+                           '<span style="font-size:14px;">با شماره وارد شده در فیلد استعلام بگیرید.</span>' +
+                           '</div>';
+            
+            // Clear vCard number for next use
+            document.getElementById('vcard_inquiry_number').value = '';
+            
+            // Optional: Auto-focus on the inquiry button or mobile field
+            document.getElementById('inquiry_mobile').focus();
+            
+          } else if (json.message === 'کارت یافت نشد.') {
+            msg.textContent = 'کارت یافت نشد.';
+          } else {
+            msg.textContent = json.message || 'خطا در جستجوی کارت مجازی.';
+          }
+        })
+        .catch(error => {
+          console.error('VCard lookup error:', error);
           msg.textContent = 'خطا در اتصال به سرور';
         });
     });
