@@ -4,6 +4,8 @@
  * This file contains functions for handling controlled deletion of transactions
  */
 
+require_once 'credit_deactivation_utils.php';
+
 /**
  * Check if a user has permission to delete a transaction
  * 
@@ -55,61 +57,54 @@ function checkDeletePermission($transaction, $admin_mobile, $is_manager) {
  * @param PDO $pdo Database connection
  * @return bool True if deletion was successful
  */
-function deleteTransaction($transaction_id, $transaction_type, $pdo) {
+function deleteTransaction($transaction_id, $transaction_type, $pdo, $admin_mobile = null) {
     try {
-        $pdo->beginTransaction();
-        
         if ($transaction_type === 'purchase') {
-            // First, get the purchase details before deletion
-            $stmt = $pdo->prepare('SELECT subscriber_id, mobile, amount FROM purchases WHERE id = ? AND active = 1 LIMIT 1');
-            $stmt->execute([$transaction_id]);
-            $purchase = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$purchase) {
-                $pdo->rollBack();
-                return false; // Purchase not found or already deleted
+            // Check if the new credit deactivation utilities are available
+            if (!file_exists(__DIR__ . '/credit_deactivation_utils.php')) {
+                // Fallback to old logic if new utilities are not available
+                error_log('credit_deactivation_utils.php not found, using fallback deletion logic');
+                return deleteTransactionFallback($transaction_id, $pdo);
             }
             
-            // Calculate the credit points that were earned from this purchase
-            $creditToSubtract = round(((float)$purchase['amount'])/100000.0, 1);
+            require_once __DIR__ . '/credit_deactivation_utils.php';
             
-            if ($creditToSubtract > 0) {
-                // Find the user to subtract credit from
-                $user_id = null;
-                if ($purchase['subscriber_id']) {
-                    $user_id = $purchase['subscriber_id'];
-                } else {
-                    // If subscriber_id is null, find user by mobile
-                    $stmt = $pdo->prepare('SELECT id FROM subscribers WHERE mobile = ? LIMIT 1');
-                    $stmt->execute([$purchase['mobile']]);
-                    $user_id = $stmt->fetchColumn();
-                }
-                
-                if ($user_id) {
-                    // Subtract the earned credit from user's total credit
-                    $stmt = $pdo->prepare('UPDATE subscribers SET credit = GREATEST(0, credit - ?) WHERE id = ?');
-                    $stmt->execute([$creditToSubtract, $user_id]);
-                }
-            }
-            
-            // Perform the soft delete
-            $stmt = $pdo->prepare('UPDATE purchases SET active = 0 WHERE id = ?');
-            $stmt->execute([$transaction_id]);
+            // Use the new improved purchase deactivation logic
+            $result = deactivate_purchase_with_credit_adjustment($pdo, $transaction_id, $admin_mobile);
+            return $result['success'];
         } else {
             // For credit usage, just perform soft delete (no credit adjustment needed)
-            $stmt = $pdo->prepare('UPDATE credit_usage SET active = 0 WHERE id = ?');
+            $pdo->beginTransaction();
+            
+            // Check if active column exists in credit_usage table
+            $column_check = $pdo->query("SHOW COLUMNS FROM credit_usage LIKE 'active'");
+            $has_active_column = $column_check->rowCount() > 0;
+            
+            if ($has_active_column) {
+                $stmt = $pdo->prepare('UPDATE credit_usage SET active = 0 WHERE id = ?');
+            } else {
+                // Add the column if it doesn't exist
+                try {
+                    $pdo->exec("ALTER TABLE credit_usage ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1");
+                    $stmt = $pdo->prepare('UPDATE credit_usage SET active = 0 WHERE id = ?');
+                } catch (Exception $e) {
+                    error_log("Could not add active column to credit_usage table: " . $e->getMessage());
+                    $pdo->rollBack();
+                    return false;
+                }
+            }
+            
             $stmt->execute([$transaction_id]);
+            $success = $stmt->rowCount() > 0;
+            
+            if ($success) {
+                $pdo->commit();
+            } else {
+                $pdo->rollBack();
+            }
+            
+            return $success;
         }
-        
-        $success = $stmt->rowCount() > 0;
-        
-        if ($success) {
-            $pdo->commit();
-        } else {
-            $pdo->rollBack();
-        }
-        
-        return $success;
     } catch (Exception $e) {
         try {
             if ($pdo->inTransaction()) {
@@ -126,6 +121,99 @@ function deleteTransaction($transaction_id, $transaction_type, $pdo) {
 }
 
 /**
+ * Fallback deletion function for purchases (old logic)
+ * Used when the new credit deactivation utilities are not available
+ * 
+ * @param int $transaction_id Purchase ID
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function deleteTransactionFallback($transaction_id, $pdo) {
+    try {
+        $pdo->beginTransaction();
+        
+        // Check if active column exists in purchases table
+        $column_check = $pdo->query("SHOW COLUMNS FROM purchases LIKE 'active'");
+        $has_active_column = $column_check->rowCount() > 0;
+        
+        if ($has_active_column) {
+            // Get purchase details before deletion (with active column)
+            $stmt = $pdo->prepare('SELECT subscriber_id, mobile, amount FROM purchases WHERE id = ? AND active = 1 LIMIT 1');
+        } else {
+            // Get purchase details before deletion (without active column)
+            $stmt = $pdo->prepare('SELECT subscriber_id, mobile, amount FROM purchases WHERE id = ? LIMIT 1');
+        }
+        
+        $stmt->execute([$transaction_id]);
+        $purchase = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$purchase) {
+            $pdo->rollBack();
+            return false; // Purchase not found or already deleted
+        }
+        
+        // Calculate the credit points that were earned from this purchase
+        $creditToSubtract = round(((float)$purchase['amount'])/100000.0, 1);
+        
+        if ($creditToSubtract > 0) {
+            // Find the user to subtract credit from
+            $user_id = null;
+            if ($purchase['subscriber_id']) {
+                $user_id = $purchase['subscriber_id'];
+            } else {
+                // If subscriber_id is null, find user by mobile
+                $stmt = $pdo->prepare('SELECT id FROM subscribers WHERE mobile = ? LIMIT 1');
+                $stmt->execute([$purchase['mobile']]);
+                $user_id = $stmt->fetchColumn();
+            }
+            
+            if ($user_id) {
+                // Subtract the earned credit from user's total credit
+                $stmt = $pdo->prepare('UPDATE subscribers SET credit = GREATEST(0, credit - ?) WHERE id = ?');
+                $stmt->execute([$creditToSubtract, $user_id]);
+            }
+        }
+        
+        // Perform the soft delete
+        if ($has_active_column) {
+            $stmt = $pdo->prepare('UPDATE purchases SET active = 0 WHERE id = ?');
+        } else {
+            // If no active column, we need to add it first, or use a different approach
+            // Let's add the column dynamically
+            try {
+                $pdo->exec("ALTER TABLE purchases ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1");
+                $stmt = $pdo->prepare('UPDATE purchases SET active = 0 WHERE id = ?');
+            } catch (Exception $e) {
+                // If we can't add the column, we can't do soft delete
+                // This is a fallback - you might want to handle this differently
+                error_log("Could not add active column to purchases table: " . $e->getMessage());
+                $pdo->rollBack();
+                return false;
+            }
+        }
+        
+        $stmt->execute([$transaction_id]);
+        
+        $success = $stmt->rowCount() > 0;
+        
+        if ($success) {
+            $pdo->commit();
+        } else {
+            $pdo->rollBack();
+        }
+        
+        return $success;
+        
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Fallback delete transaction error: ' . $e->getMessage());
+        return false;
+    }
+}
+
+/**
  * Notify all managers about a transaction deletion event
  * 
  * @param array $transaction The transaction data
@@ -135,7 +223,7 @@ function deleteTransaction($transaction_id, $transaction_type, $pdo) {
  */
 function notifyManagers($transaction, $admin_mobile, $reason) {
     // Log the event
-    $admin_name = get_admin_name($admin_mobile);
+    $admin_name = function_exists('get_admin_name') ? get_admin_name($admin_mobile) : $admin_mobile;
     $transaction_type = isset($transaction['type']) ? $transaction['type'] : 'purchase';
     $transaction_id = isset($transaction['id']) ? $transaction['id'] : 'unknown';
     $transaction_amount = isset($transaction['amount']) ? $transaction['amount'] : 'unknown';

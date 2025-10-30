@@ -1,10 +1,101 @@
+// Persian/Farsi digit normalization function for JavaScript
+function normDigits(str) {
+  if (!str) return str;
+  
+  const persianNumbers = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
+  const arabicNumbers = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+  const englishNumbers = ['0','1','2','3','4','5','6','7','8','9'];
+  
+  // Convert Persian digits
+  for (let i = 0; i < 10; i++) {
+    str = str.replace(new RegExp(persianNumbers[i], 'g'), englishNumbers[i]);
+  }
+  
+  // Convert Arabic digits
+  for (let i = 0; i < 10; i++) {
+    str = str.replace(new RegExp(arabicNumbers[i], 'g'), englishNumbers[i]);
+  }
+  
+  // Remove any spaces
+  str = str.replace(/\s+/g, '');
+  
+  return str;
+}
+
+// Auto-normalize mobile number fields on input
+function setupMobileNormalization() {
+  // Select all mobile input fields (various IDs used across the system)
+  const mobileInputSelectors = [
+    '#mobile',           // Main form
+    '#mobile_number',    // Mobile inquiry
+    '#login_mobile',     // Admin login
+    '#sub_mobile',       // Admin add subscriber
+    '#inquiry_mobile',   // Admin inquiry
+    '#gift_credit_mobile', // Gift credits
+    '#vcard_mobile',     // VCard mobile
+    'input[name="mobile"]',
+    'input[name="mobile_number"]'
+  ];
+  
+  mobileInputSelectors.forEach(selector => {
+    const elements = document.querySelectorAll(selector);
+    elements.forEach(element => {
+      if (element) {
+        element.addEventListener('input', function(e) {
+          const normalizedValue = normDigits(e.target.value);
+          if (normalizedValue !== e.target.value) {
+            e.target.value = normalizedValue;
+          }
+        });
+        
+        // Also normalize on blur to catch paste events
+        element.addEventListener('blur', function(e) {
+          e.target.value = normDigits(e.target.value);
+        });
+      }
+    });
+  });
+  
+  // Watch for dynamically added mobile input fields
+  const observer = new MutationObserver(function(mutations) {
+    mutations.forEach(function(mutation) {
+      mutation.addedNodes.forEach(function(node) {
+        if (node.nodeType === 1) { // Element node
+          // Check if the added node contains mobile input fields
+          const mobileInputs = node.querySelectorAll ? 
+            node.querySelectorAll('input[id*="mobile"], input[name*="mobile"]') : [];
+          
+          mobileInputs.forEach(input => {
+            input.addEventListener('input', function(e) {
+              const normalizedValue = normDigits(e.target.value);
+              if (normalizedValue !== e.target.value) {
+                e.target.value = normalizedValue;
+              }
+            });
+            
+            input.addEventListener('blur', function(e) {
+              e.target.value = normDigits(e.target.value);
+            });
+          });
+        }
+      });
+    });
+  });
+  
+  // Start observing
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
+  // Initialize mobile number normalization
+  setupMobileNormalization();
+  
   // Newsletter form submit
   const newsletterForm = document.getElementById('newsletter-form');
   if (newsletterForm) {
     newsletterForm.addEventListener('submit', function(e) {
       e.preventDefault();
-      const mobile = document.getElementById('mobile').value.trim();
+      const mobile = normDigits(document.getElementById('mobile').value.trim());
       if (!mobile) return showError('Please enter your mobile number.');
       fetch('send_otp.php', {
         method: 'POST',
@@ -31,7 +122,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const nameField = document.getElementById('full_name');
   const name = nameField ? nameField.value.trim() : '';
   const code = document.getElementById('otp_code').value.trim();
-      const mobile = document.getElementById('verify_mobile').value;
+      const mobile = normDigits(document.getElementById('verify_mobile').value);
   if (!code) return showError('لطفاً کد تایید را وارد کنید.');
       fetch('verify_otp.php', {
         method: 'POST',

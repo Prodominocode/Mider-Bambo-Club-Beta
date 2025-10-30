@@ -8,6 +8,7 @@ require_once 'branch_utils.php';
 require_once 'pending_credits_utils.php';
 require_once 'vcard_utils.php';
 require_once 'gift_credit_utils.php';
+require_once 'advisor_utils.php';
 
 // Set time zone to Tehran for all date/time operations
 date_default_timezone_set('Asia/Tehran');
@@ -250,7 +251,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
         $admin_mobile = $_SESSION['admin_mobile'];
         
         $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
-        $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : '';
+        $mobile_number = isset($_POST['mobile_number']) ? norm_digits(trim($_POST['mobile_number'])) : '';
         
         // Parse sales_centers from the new URL-encoded format
         $sales_centers = [];
@@ -299,7 +300,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'){
         
         $advisor_id = isset($_POST['advisor_id']) ? (int)$_POST['advisor_id'] : 0;
         $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
-        $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : '';
+        $mobile_number = isset($_POST['mobile_number']) ? norm_digits(trim($_POST['mobile_number'])) : '';
         
         // Parse sales_centers from the new URL-encoded format
         $sales_centers = [];
@@ -955,13 +956,23 @@ $branch_domain";
         echo json_encode(['status'=>'success']); exit;
     } elseif ($action === 'delete_transaction') {
         // Admin only
-        if (empty($_SESSION['admin_mobile'])) { echo json_encode(['status'=>'error','message'=>'not_logged_in']); exit; }
+        if (empty($_SESSION['admin_mobile'])) { 
+            echo json_encode(['status'=>'error','message'=>'not_logged_in']); 
+            exit; 
+        }
         
         $transaction_id = isset($_POST['transaction_id']) ? (int)$_POST['transaction_id'] : 0;
-        $transaction_type = isset($_POST['transaction_type']) ? $_POST['transaction_type'] : '';
+        $transaction_type = isset($_POST['transaction_type']) ? trim($_POST['transaction_type']) : '';
         
-        if (!$transaction_id || ($transaction_type !== 'purchase' && $transaction_type !== 'credit')) {
-            echo json_encode(['status'=>'error','message'=>'invalid_request']); exit;
+        // Validate inputs
+        if (!$transaction_id) {
+            echo json_encode(['status'=>'error','message'=>'Invalid transaction ID']); 
+            exit;
+        }
+        
+        if ($transaction_type !== 'purchase' && $transaction_type !== 'credit') {
+            echo json_encode(['status'=>'error','message'=>'Invalid transaction type']); 
+            exit;
         }
         
         // Get admin info
@@ -969,42 +980,122 @@ $branch_domain";
         $is_manager = !empty($_SESSION['is_manager']);
         
         try {
-            // Get the transaction details first
+            // For purchase deletion - simple focused logic
             if ($transaction_type === 'purchase') {
-                $stmt = $pdo->prepare('SELECT id, mobile, amount, created_at as date, admin_number FROM purchases WHERE id = ? LIMIT 1');
+                $pdo->beginTransaction();
+                
+                // 1. Get purchase details
+                $stmt = $pdo->prepare('SELECT id, subscriber_id, mobile, amount, admin_number FROM purchases WHERE id = ? LIMIT 1');
+                $stmt->execute([$transaction_id]);
+                $purchase = $stmt->fetch(PDO::FETCH_ASSOC);
+                
+                if (!$purchase) {
+                    $pdo->rollBack();
+                    echo json_encode(['status'=>'error','message'=>'Transaction not found']); 
+                    exit;
+                }
+                
+                // Check permissions
+                if (!$is_manager) {
+                    if ($purchase['admin_number'] !== $admin_mobile) {
+                        $pdo->rollBack();
+                        echo json_encode(['status'=>'error','message'=>'Access denied']); 
+                        exit;
+                    }
+                }
+                
+                // 2. Check if pending_credits table exists and get related pending credit
+                $pending_credit_transferred = false;
+                $credit_to_subtract = 0;
+                
+                $stmt = $pdo->query("SHOW TABLES LIKE 'pending_credits'");
+                if ($stmt->rowCount() > 0) {
+                    // Find related pending credit
+                    $stmt = $pdo->prepare('SELECT id, credit_amount, transferred FROM pending_credits WHERE purchase_id = ? LIMIT 1');
+                    $stmt->execute([$transaction_id]);
+                    $pending_credit = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if ($pending_credit) {
+                        if ($pending_credit['transferred'] == 1) {
+                            // Credit was already transferred, need to subtract it
+                            $pending_credit_transferred = true;
+                            $credit_to_subtract = (float)$pending_credit['credit_amount'];
+                        }
+                        
+                        // Set pending_credits.active = 0 (add column if doesn't exist)
+                        $stmt = $pdo->query("SHOW COLUMNS FROM pending_credits LIKE 'active'");
+                        if ($stmt->rowCount() > 0) {
+                            $stmt = $pdo->prepare('UPDATE pending_credits SET active = 0 WHERE purchase_id = ?');
+                            $stmt->execute([$transaction_id]);
+                        } else {
+                            // Add active column and then update
+                            $pdo->exec("ALTER TABLE pending_credits ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1");
+                            $stmt = $pdo->prepare('UPDATE pending_credits SET active = 0 WHERE purchase_id = ?');
+                            $stmt->execute([$transaction_id]);
+                        }
+                    }
+                } else {
+                    // No pending_credits table, subtract credit directly
+                    $credit_to_subtract = round(((float)$purchase['amount']) / 100000.0, 1);
+                }
+                
+                // 3. Adjust subscriber credit if needed
+                if ($credit_to_subtract > 0) {
+                    $user_id = $purchase['subscriber_id'];
+                    if (!$user_id && $purchase['mobile']) {
+                        $stmt = $pdo->prepare('SELECT id FROM subscribers WHERE mobile = ? LIMIT 1');
+                        $stmt->execute([$purchase['mobile']]);
+                        $user_id = $stmt->fetchColumn();
+                    }
+                    
+                    if ($user_id) {
+                        $stmt = $pdo->prepare('UPDATE subscribers SET credit = GREATEST(0, credit - ?) WHERE id = ?');
+                        $stmt->execute([$credit_to_subtract, $user_id]);
+                    }
+                }
+                
+                // 4. Set purchases.active = 0 (add column if doesn't exist)
+                $stmt = $pdo->query("SHOW COLUMNS FROM purchases LIKE 'active'");
+                if ($stmt->rowCount() > 0) {
+                    $stmt = $pdo->prepare('UPDATE purchases SET active = 0 WHERE id = ?');
+                    $stmt->execute([$transaction_id]);
+                } else {
+                    // Add active column and then update
+                    $pdo->exec("ALTER TABLE purchases ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1");
+                    $stmt = $pdo->prepare('UPDATE purchases SET active = 0 WHERE id = ?');
+                    $stmt->execute([$transaction_id]);
+                }
+                
+                $pdo->commit();
+                echo json_encode(['status'=>'success','message'=>'Transaction deleted successfully']); 
+                exit;
+                
             } else {
-                $stmt = $pdo->prepare('SELECT id, user_mobile as mobile, amount, datetime as date, admin_mobile FROM credit_usage WHERE id = ? LIMIT 1');
+                // Credit usage deletion - simple logic
+                $pdo->beginTransaction();
+                
+                $stmt = $pdo->query("SHOW COLUMNS FROM credit_usage LIKE 'active'");
+                if ($stmt->rowCount() > 0) {
+                    $stmt = $pdo->prepare('UPDATE credit_usage SET active = 0 WHERE id = ?');
+                } else {
+                    $pdo->exec("ALTER TABLE credit_usage ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1");
+                    $stmt = $pdo->prepare('UPDATE credit_usage SET active = 0 WHERE id = ?');
+                }
+                $stmt->execute([$transaction_id]);
+                
+                $pdo->commit();
+                echo json_encode(['status'=>'success','message'=>'Transaction deleted successfully']); 
+                exit;
             }
-            
-            $stmt->execute([$transaction_id]);
-            $transaction = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$transaction) {
-                echo json_encode(['status'=>'error','message'=>'transaction_not_found']); exit;
-            }
-            
-            // Include delete_transaction.php for helper functions
-            require_once 'delete_transaction.php';
-            
-            // Check if admin has permission to delete this transaction
-            $permission = checkDeletePermission($transaction, $admin_mobile, $is_manager);
-            
-            if (!$permission['allowed']) {
-                echo json_encode(['status'=>'error','message'=>$permission['message']]); exit;
-            }
-            
-            // Perform the deletion (soft delete)
-            $deleted = deleteTransaction($transaction_id, $transaction_type, $pdo);
-            
-            if (!$deleted) {
-                echo json_encode(['status'=>'error','message'=>'delete_failed']); exit;
-            }
-            
-            echo json_encode(['status'=>'success']); exit;
             
         } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             error_log('delete_transaction error: ' . $e->getMessage());
-            echo json_encode(['status'=>'error','message'=>'server_error']); exit;
+            error_log('delete_transaction file: ' . $e->getFile() . ' line: ' . $e->getLine());
+            echo json_encode(['status'=>'error','message'=>'Server error: ' . $e->getMessage()]); 
+            exit;
         }
     } elseif ($action === 'verify_otp'){
         $mobile = isset($_POST['mobile']) ? norm_digits($_POST['mobile']) : '';
@@ -1349,6 +1440,274 @@ $branch_domain";
                 'sales_center_name' => $sales_center_name
             ]); exit;
         } catch (Throwable $e){ try{ if ($pdo->inTransaction()) $pdo->rollBack(); }catch(Throwable $_){} echo json_encode(['status'=>'error','message'=>$e->getMessage()]); exit; }
+    } elseif ($action === 'edit_transaction') {
+        // Admin only - edit transaction functionality
+        if (empty($_SESSION['admin_mobile'])) { 
+            echo json_encode(['status'=>'error','message'=>'not_logged_in']); 
+            exit; 
+        }
+        
+        // Get input parameters
+        $transaction_id = isset($_POST['transaction_id']) ? (int)$_POST['transaction_id'] : 0;
+        $transaction_type = isset($_POST['transaction_type']) ? trim($_POST['transaction_type']) : '';
+        $new_amount = isset($_POST['amount']) ? trim($_POST['amount']) : ''; // Keep for compatibility but won't be changed
+        $new_description = isset($_POST['description']) ? trim($_POST['description']) : '';
+        $new_advisor_ids = [];
+        
+        // Extract advisor_ids from JSON string
+        if (isset($_POST['advisor_ids']) && !empty($_POST['advisor_ids'])) {
+            $advisor_ids_json = $_POST['advisor_ids'];
+            $decoded_ids = json_decode($advisor_ids_json, true);
+            if (is_array($decoded_ids)) {
+                foreach ($decoded_ids as $advisor_id) {
+                    $advisor_id = intval($advisor_id);
+                    if ($advisor_id > 0) {
+                        $new_advisor_ids[] = $advisor_id;
+                    }
+                }
+            }
+        }
+        
+        // Remove duplicates
+        $new_advisor_ids = array_unique($new_advisor_ids);
+        
+        // Validate inputs
+        if (!$transaction_id || $transaction_type !== 'purchase') {
+            echo json_encode(['status'=>'error','message'=>'Invalid transaction parameters']); 
+            exit;
+        }
+        
+        // Amount is read-only, so no validation needed for it
+        
+        // Get admin info
+        $admin_mobile = $_SESSION['admin_mobile'];
+        $is_manager = !empty($_SESSION['is_manager']);
+        
+        try {
+            $pdo->beginTransaction();
+            
+            // 1. Get original purchase details for permission check
+            $stmt = $pdo->prepare('SELECT id, subscriber_id, mobile, amount, admin_number, branch_id, sales_center_id, description, created_at FROM purchases WHERE id = ? AND active = 1 LIMIT 1');
+            $stmt->execute([$transaction_id]);
+            $purchase = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$purchase) {
+                $pdo->rollBack();
+                echo json_encode(['status'=>'error','message'=>'Transaction not found']); 
+                exit;
+            }
+            
+            // 2. Check permissions - same as delete transaction
+            if (!$is_manager) {
+                // Sellers can only edit their own transactions
+                if ($purchase['admin_number'] !== $admin_mobile) {
+                    $pdo->rollBack();
+                    echo json_encode(['status'=>'error','message'=>'Access denied - you can only edit your own transactions']); 
+                    exit;
+                }
+                
+                // Check time restriction (6 hours) for sellers
+                $transaction_time = strtotime($purchase['created_at'] ?? 'now');
+                $current_time = time();
+                $hours_passed = ($current_time - $transaction_time) / 3600;
+                
+                if ($hours_passed > 6) {
+                    $pdo->rollBack();
+                    echo json_encode(['status'=>'error','message'=>'Cannot edit transaction older than 6 hours']); 
+                    exit;
+                }
+            }
+            
+            // 3. Check if purchase table has description column
+            $hasDescriptionColumn = false;
+            try {
+                $checkStmt = $pdo->prepare("SHOW COLUMNS FROM purchases LIKE 'description'");
+                $checkStmt->execute();
+                $hasDescriptionColumn = $checkStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                // Ignore column check errors for backward compatibility
+            }
+            
+            // 4. Update the purchase record (only description, not amount)
+            if ($hasDescriptionColumn) {
+                $updateStmt = $pdo->prepare('UPDATE purchases SET description = ? WHERE id = ?');
+                $updateStmt->execute([$new_description, $transaction_id]);
+            }
+            // If description column doesn't exist, there's nothing to update in the purchase record
+            
+            // 5. Update advisor associations if purchase_advisors table exists
+            $checkPurchaseAdvisorsTable = false;
+            try {
+                $checkStmt = $pdo->prepare("SHOW TABLES LIKE 'purchase_advisors'");
+                $checkStmt->execute();
+                $checkPurchaseAdvisorsTable = $checkStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                error_log('Error checking purchase_advisors table: ' . $e->getMessage());
+            }
+            
+            if ($checkPurchaseAdvisorsTable) {
+                // Get currently assigned advisor IDs to calculate credit adjustments
+                $currentAdvisorsStmt = $pdo->prepare('SELECT advisor_id, earned_credit FROM purchase_advisors WHERE purchase_id = ?');
+                $currentAdvisorsStmt->execute([$transaction_id]);
+                $currentAdvisors = $currentAdvisorsStmt->fetchAll(PDO::FETCH_ASSOC);
+                $currentAdvisorIds = array_column($currentAdvisors, 'advisor_id');
+                
+                // Calculate advisor credit based on original purchase time and amount
+                $purchase_time = $purchase['created_at'] ? date('H:i:s', strtotime($purchase['created_at'])) : null;
+                $earned_credit_per_advisor = calculate_advisor_credit((float)$purchase['amount'], $purchase_time);
+                
+                // Find advisors being removed (need to deduct credits)
+                $removedAdvisorIds = array_diff($currentAdvisorIds, $new_advisor_ids);
+                if (!empty($removedAdvisorIds)) {
+                    foreach ($removedAdvisorIds as $advisor_id) {
+                        // Deduct the earned credit from advisor's total
+                        $deductStmt = $pdo->prepare('UPDATE advisors SET credit = credit - ? WHERE id = ? AND credit >= ?');
+                        $deductStmt->execute([$earned_credit_per_advisor, $advisor_id, $earned_credit_per_advisor]);
+                    }
+                }
+                
+                // Find advisors being added (need to add credits)
+                $addedAdvisorIds = array_diff($new_advisor_ids, $currentAdvisorIds);
+                if (!empty($addedAdvisorIds)) {
+                    foreach ($addedAdvisorIds as $advisor_id) {
+                        // Add the earned credit to advisor's total
+                        $addStmt = $pdo->prepare('UPDATE advisors SET credit = credit + ? WHERE id = ?');
+                        $addStmt->execute([$earned_credit_per_advisor, $advisor_id]);
+                    }
+                }
+                
+                // Update advisor associations - remove all and add new ones
+                $deleteStmt = $pdo->prepare('DELETE FROM purchase_advisors WHERE purchase_id = ?');
+                $deleteStmt->execute([$transaction_id]);
+                
+                // Add new advisor associations with earned credit
+                if (!empty($new_advisor_ids)) {
+                    $advisorInsert = $pdo->prepare('INSERT INTO purchase_advisors (purchase_id, advisor_id, earned_credit) VALUES (?, ?, ?)');
+                    foreach ($new_advisor_ids as $advisor_id) {
+                        if ((int)$advisor_id > 0) {
+                            try {
+                                $advisorInsert->execute([$transaction_id, (int)$advisor_id, $earned_credit_per_advisor]);
+                            } catch (Exception $e) {
+                                // If earned_credit column doesn't exist, insert without it
+                                $advisorInsertFallback = $pdo->prepare('INSERT INTO purchase_advisors (purchase_id, advisor_id) VALUES (?, ?)');
+                                $advisorInsertFallback->execute([$transaction_id, (int)$advisor_id]);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            $pdo->commit();
+            
+            echo json_encode([
+                'status' => 'success',
+                'message' => 'Transaction updated successfully',
+                'transaction_id' => $transaction_id
+            ]);
+            exit;
+            
+        } catch (Throwable $e) {
+            try { if ($pdo->inTransaction()) $pdo->rollBack(); } catch(Throwable $_) {}
+            error_log('edit_transaction error: ' . $e->getMessage());
+            echo json_encode(['status'=>'error','message'=>'Server error occurred']); exit;
+        }
+    } elseif ($action === 'get_transaction_details') {
+        // Admin only - get transaction details for editing
+        if (empty($_SESSION['admin_mobile'])) { 
+            echo json_encode(['status'=>'error','message'=>'not_logged_in']); 
+            exit; 
+        }
+        
+        // Get input parameters
+        $transaction_id = isset($_POST['transaction_id']) ? (int)$_POST['transaction_id'] : 0;
+        $transaction_type = isset($_POST['transaction_type']) ? trim($_POST['transaction_type']) : '';
+        
+        // Validate inputs
+        if (!$transaction_id || $transaction_type !== 'purchase') {
+            echo json_encode(['status'=>'error','message'=>'Invalid transaction parameters']); 
+            exit;
+        }
+        
+        // Get admin info
+        $admin_mobile = $_SESSION['admin_mobile'];
+        $is_manager = !empty($_SESSION['is_manager']);
+        
+        try {
+            // Get purchase details
+            $stmt = $pdo->prepare('
+                SELECT p.id, p.mobile, p.amount, p.description, p.created_at, p.admin_number, p.branch_id, p.sales_center_id 
+                FROM purchases p 
+                WHERE p.id = ? AND p.active = 1 
+                LIMIT 1
+            ');
+            $stmt->execute([$transaction_id]);
+            $purchase = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$purchase) {
+                echo json_encode(['status'=>'error','message'=>'Transaction not found']); 
+                exit;
+            }
+            
+            // Check permissions - same as edit/delete
+            if (!$is_manager) {
+                if ($purchase['admin_number'] !== $admin_mobile) {
+                    echo json_encode(['status'=>'error','message'=>'Access denied']); 
+                    exit;
+                }
+            }
+            
+            // Get branch info for display
+            require_once 'branch_utils.php';
+            $branch_info = get_branch_info($purchase['branch_id']);
+            $branch_name = $branch_info ? $branch_info['name'] : "شعبه " . $purchase['branch_id'];
+            
+            $sales_center_name = '';
+            if ($branch_info && isset($branch_info['sales_centers'][$purchase['sales_center_id']])) {
+                $sales_center_name = $branch_info['sales_centers'][$purchase['sales_center_id']];
+            }
+            
+            $branch_store = $branch_name;
+            if ($sales_center_name) {
+                $branch_store .= " / " . $sales_center_name;
+            }
+            
+            // Get assigned advisor IDs
+            $advisor_ids = [];
+            $checkPurchaseAdvisorsTable = false;
+            try {
+                $checkStmt = $pdo->prepare("SHOW TABLES LIKE 'purchase_advisors'");
+                $checkStmt->execute();
+                $checkPurchaseAdvisorsTable = $checkStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                // Ignore table check errors
+            }
+            
+            if ($checkPurchaseAdvisorsTable) {
+                $advisorStmt = $pdo->prepare('SELECT advisor_id FROM purchase_advisors WHERE purchase_id = ?');
+                $advisorStmt->execute([$transaction_id]);
+                while ($row = $advisorStmt->fetch(PDO::FETCH_ASSOC)) {
+                    $advisor_ids[] = (int)$row['advisor_id'];
+                }
+            }
+            
+            echo json_encode([
+                'status' => 'success',
+                'transaction' => [
+                    'id' => $purchase['id'],
+                    'mobile' => $purchase['mobile'],
+                    'amount' => $purchase['amount'],
+                    'description' => $purchase['description'] ?: '',
+                    'date' => $purchase['created_at'],
+                    'branch_store' => $branch_store,
+                    'advisor_ids' => $advisor_ids
+                ]
+            ]);
+            exit;
+            
+        } catch (Throwable $e) {
+            error_log('get_transaction_details error: ' . $e->getMessage());
+            echo json_encode(['status'=>'error','message'=>'Server error occurred']); exit;
+        }
     }
 }
 
@@ -1394,7 +1753,7 @@ if ($action === 'get_vcards') {
     }
     
     $vcard_number = isset($_POST['vcard_number']) ? trim($_POST['vcard_number']) : '';
-    $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : null;
+    $mobile_number = isset($_POST['mobile_number']) ? norm_digits(trim($_POST['mobile_number'])) : null;
     $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : null;
     $credit_amount = isset($_POST['credit_amount']) ? (int)$_POST['credit_amount'] : 0;
     
@@ -1421,7 +1780,7 @@ if ($action === 'get_vcards') {
     
     $vcard_id = isset($_POST['vcard_id']) ? (int)$_POST['vcard_id'] : 0;
     $vcard_number = isset($_POST['vcard_number']) ? trim($_POST['vcard_number']) : '';
-    $mobile_number = isset($_POST['mobile_number']) ? trim($_POST['mobile_number']) : null;
+    $mobile_number = isset($_POST['mobile_number']) ? norm_digits(trim($_POST['mobile_number'])) : null;
     $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : null;
     $credit_amount = isset($_POST['credit_amount']) ? (int)$_POST['credit_amount'] : 0;
     
@@ -1801,6 +2160,19 @@ if ($action === 'get_vcards') {
               <div class="btn-text">اعتبار هدیه</div>
             </button>
             <?php endif; ?>
+            <?php 
+            // Show credit audit button only for managers
+            // HIDDEN: Credit audit button temporarily disabled
+            /*
+            if ($is_manager): 
+            ?>
+            <button id="btn_credit_audit" class="btn-large">
+              <div class="btn-icon">📊</div>
+              <div class="btn-text">بررسی اعتبارات</div>
+            </button>
+            <?php endif; 
+            */
+            ?>
           </div>
         </div>
       </div>
@@ -2061,6 +2433,61 @@ if ($action === 'get_vcards') {
             </div>
           </div>
           <?php endif; ?>
+        </div>
+      </div>
+      
+      <!-- Edit Transaction Modal (initially hidden) -->
+      <div id="edit_transaction_modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:1000;">
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1c1e;padding:20px;border-radius:8px;width:90%;max-width:500px;max-height:90%;overflow-y:auto;box-sizing:border-box;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;">
+            <h3 style="margin:0;color:#fff;flex:1;">ویرایش تراکنش</h3>
+            <button id="close_edit_modal" style="background:none;border:none;color:#fff;font-size:24px;cursor:pointer;padding:0;margin-right:10px;line-height:1;width:24px;height:24px;display:flex;align-items:center;justify-content:center;">&times;</button>
+          </div>
+          
+          <form id="edit_transaction_form">
+            <input type="hidden" id="edit_transaction_id">
+            <input type="hidden" id="edit_transaction_type" value="purchase">
+            
+            <!-- Read-only fields -->
+            <div style="margin-bottom:12px;">
+              <label style="display:block;margin-bottom:4px;color:#888;font-size:14px;">موبایل مشتری (غیرقابل تغییر)</label>
+              <input type="text" id="edit_mobile" readonly style="width:100%;padding:8px;border-radius:6px;border:1px solid #444;background:#0a0a0a;color:#888;box-sizing:border-box;">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label style="display:block;margin-bottom:4px;color:#888;font-size:14px;">تاریخ (غیرقابل تغییر)</label>
+              <input type="text" id="edit_date" readonly style="width:100%;padding:8px;border-radius:6px;border:1px solid #444;background:#0a0a0a;color:#888;box-sizing:border-box;">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label style="display:block;margin-bottom:4px;color:#888;font-size:14px;">شعبه / فروشگاه (غیرقابل تغییر)</label>
+              <input type="text" id="edit_branch_store" readonly style="width:100%;padding:8px;border-radius:6px;border:1px solid #444;background:#0a0a0a;color:#888;box-sizing:border-box;">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label style="display:block;margin-bottom:4px;color:#888;font-size:14px;">مبلغ خرید (تومان) - غیرقابل تغییر</label>
+              <input type="text" id="edit_amount" readonly style="width:100%;padding:8px;border-radius:6px;border:1px solid #444;background:#0a0a0a;color:#888;box-sizing:border-box;">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label style="display:block;margin-bottom:4px;color:#fff;font-size:14px;">توضیحات</label>
+              <input type="text" id="edit_description" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0d0d0d;color:#fff;box-sizing:border-box;" placeholder="توضیحات اختیاری">
+            </div>
+            
+            <div style="margin-bottom:12px;">
+              <label style="display:block;margin-bottom:4px;color:#fff;font-size:14px;">انتخاب مشاور(ان)</label>
+              <div id="edit_advisors_container" style="max-height:120px;overflow-y:auto;border:1px solid #333;border-radius:6px;padding:8px;background:#0d0d0d;box-sizing:border-box;">
+                <!-- Advisor checkboxes will be loaded here -->
+              </div>
+            </div>
+            
+            <div style="display:flex;gap:10px;margin-top:20px;">
+              <button type="submit" class="btn btn-primary" style="flex:1;padding:10px;">ذخیره تغییرات</button>
+              <button type="button" id="cancel_edit" class="btn btn-ghost" style="flex:1;padding:10px;">انصراف</button>
+            </div>
+          </form>
+          
+          <div id="edit_transaction_msg" class="msg" style="margin-top:10px;"></div>
         </div>
       </div>
       
@@ -2644,6 +3071,17 @@ if ($action === 'get_vcards') {
       console.log('Today report button clicked. Tehran date:', formattedDate);
       loadTodayReport(formattedDate);
     });
+
+    // Credit audit button - only for managers
+    // HIDDEN: Credit audit functionality temporarily disabled
+    /*
+    var creditAuditBtn = document.getElementById('btn_credit_audit');
+    if (creditAuditBtn) {
+      creditAuditBtn.addEventListener('click', function(){
+        window.location.href = 'credit_audit.php';
+      });
+    }
+    */
     
     // Back buttons
     document.getElementById('back_to_menu').addEventListener('click', function(){
@@ -3585,6 +4023,34 @@ if ($action === 'get_vcards') {
           deleteTransaction(transactionId, transactionType);
         }
       }
+      
+      // Check if the clicked element is an edit button
+      if (event.target.classList.contains('btn-edit')) {
+        const transactionId = event.target.getAttribute('data-id');
+        const transactionType = event.target.getAttribute('data-type');
+        
+        if (transactionType === 'purchase') {
+          openEditTransactionModal(transactionId);
+        }
+      }
+    });
+    
+    // Edit transaction modal event listeners
+    document.getElementById('close_edit_modal').addEventListener('click', function() {
+      document.getElementById('edit_transaction_modal').style.display = 'none';
+    });
+    
+    document.getElementById('cancel_edit').addEventListener('click', function() {
+      document.getElementById('edit_transaction_modal').style.display = 'none';
+    });
+    
+    document.getElementById('edit_transaction_form').addEventListener('submit', submitEditTransaction);
+    
+    // Close modal when clicking outside
+    document.getElementById('edit_transaction_modal').addEventListener('click', function(event) {
+      if (event.target === this) {
+        this.style.display = 'none';
+      }
     });
     
     // Handle member inquiry - optimized
@@ -4225,6 +4691,7 @@ if ($action === 'get_vcards') {
                 
                 // Determine if this user can delete this transaction
                 const canDelete = determineDeleteAccess(purchase);
+                const canEdit = canDelete; // Same access rules as delete
                 
                 purchasesHtml += `
                   <tr style="border-bottom:1px solid rgba(255,255,255,0.05);" data-id="${purchase.id}" data-type="purchase">
@@ -4235,6 +4702,7 @@ if ($action === 'get_vcards') {
                     <td style="padding:8px 4px;text-align:center;font-size:0.85em;">${purchase.advisor_name || '-'}</td>
                     <td style="padding:8px 4px;text-align:center;">${purchase.admin || ''}</td>
                     <td style="padding:8px 4px;text-align:center;">
+                      ${canEdit ? `<button class="btn-edit" data-id="${purchase.id}" data-type="purchase" style="background:#2196f3;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;margin-left:4px;">ویرایش</button>` : ''}
                       ${canDelete ? `<button class="btn-delete" data-id="${purchase.id}" data-type="purchase" style="background:#ff5252;color:white;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;">حذف</button>` : ''}
                     </td>
                   </tr>
@@ -4405,6 +4873,151 @@ if ($action === 'get_vcards') {
           showNotification('خطا در اتصال به سرور', 'error');
           button.textContent = originalText;
           button.disabled = false;
+        });
+    }
+    
+    // Function to open edit transaction modal
+    function openEditTransactionModal(transactionId) {
+      // First, get the transaction details from the server to get current advisor assignments
+      postJSON({
+        action: 'get_transaction_details',
+        transaction_id: transactionId,
+        transaction_type: 'purchase'
+      })
+        .then(function(response) {
+          if (response.status === 'success' && response.transaction) {
+            const transaction = response.transaction;
+            
+            // Populate the modal form
+            document.getElementById('edit_transaction_id').value = transactionId;
+            document.getElementById('edit_mobile').value = transaction.mobile || '';
+            document.getElementById('edit_date').value = transaction.date || '';
+            document.getElementById('edit_amount').value = transaction.amount || '';
+            document.getElementById('edit_branch_store').value = transaction.branch_store || '';
+            document.getElementById('edit_description').value = transaction.description || '';
+            
+            // Load advisors and then select current ones
+            loadAdvisorsForEdit(transaction.advisor_ids || []);
+            
+            // Show the modal
+            document.getElementById('edit_transaction_modal').style.display = 'block';
+          } else {
+            showNotification('خطا در دریافت اطلاعات تراکنش', 'error');
+          }
+        })
+        .catch(function(error) {
+          console.error('Error getting transaction details:', error);
+          showNotification('خطا در اتصال به سرور', 'error');
+        });
+    }
+    
+    // Function to load advisors for edit modal
+    function loadAdvisorsForEdit(selectedAdvisorIds = []) {
+      const container = document.getElementById('edit_advisors_container');
+      container.innerHTML = '<div style="text-align:center;color:#888;">در حال بارگذاری...</div>';
+      
+      // Get current branch and sales center from session
+      const currentBranchId = <?php echo json_encode($_SESSION['branch_id'] ?? 1); ?>;
+      const currentSalesCenterId = <?php echo json_encode($_SESSION['sales_center_id'] ?? 1); ?>;
+      
+      postJSON({
+        action: 'get_advisors_for_purchase',
+        branch_id: currentBranchId,
+        sales_center_id: currentSalesCenterId
+      })
+        .then(function(response) {
+          if (response.status === 'success' && response.advisors) {
+            let advisorsHtml = '';
+            response.advisors.forEach(function(advisor) {
+              advisorsHtml += `
+                <div style="margin-bottom:4px;">
+                  <label style="display:flex;align-items:center;color:#fff;cursor:pointer;">
+                    <input type="checkbox" name="edit_advisor_ids[]" value="${advisor.id}" style="margin-left:8px;">
+                    ${advisor.full_name}
+                  </label>
+                </div>
+              `;
+            });
+            
+            if (advisorsHtml === '') {
+              container.innerHTML = '<div style="text-align:center;color:#888;">مشاوری برای این شعبه تعریف نشده است</div>';
+            } else {
+              container.innerHTML = advisorsHtml;
+              
+              // Select previously assigned advisors
+              selectedAdvisorIds.forEach(function(advisorId) {
+                const checkbox = container.querySelector(`input[value="${advisorId}"]`);
+                if (checkbox) {
+                  checkbox.checked = true;
+                }
+              });
+            }
+          } else {
+            container.innerHTML = '<div style="text-align:center;color:#ff5252;">خطا در بارگذاری لیست مشاوران</div>';
+          }
+        })
+        .catch(function(error) {
+          console.error('Error loading advisors for edit:', error);
+          container.innerHTML = '<div style="text-align:center;color:#ff5252;">خطا در اتصال به سرور</div>';
+        });
+    }
+    
+    // Function to submit edit transaction form
+    function submitEditTransaction(event) {
+      event.preventDefault();
+      
+      const transactionId = document.getElementById('edit_transaction_id').value;
+      const amount = document.getElementById('edit_amount').value.trim();
+      const description = document.getElementById('edit_description').value.trim();
+      const msgDiv = document.getElementById('edit_transaction_msg');
+      
+      // Get selected advisor IDs
+      const selectedAdvisors = [];
+      document.querySelectorAll('input[name="edit_advisor_ids[]"]:checked').forEach(function(checkbox) {
+        selectedAdvisors.push(checkbox.value);
+      });
+      
+      // Amount field is read-only, so no validation needed for it
+      // Show loading state
+      const submitBtn = event.target.querySelector('button[type="submit"]');
+      const originalText = submitBtn.textContent;
+      submitBtn.textContent = 'در حال ذخیره...';
+      submitBtn.disabled = true;
+      msgDiv.textContent = '';
+      
+      // Submit the edit
+      const formData = {
+        action: 'edit_transaction',
+        transaction_id: transactionId,
+        transaction_type: 'purchase',
+        amount: amount,
+        description: description,
+        advisor_ids: JSON.stringify(selectedAdvisors)
+      };
+      
+      postJSON(formData)
+        .then(function(response) {
+          if (response.status === 'success') {
+            // Success - close modal and reload report
+            document.getElementById('edit_transaction_modal').style.display = 'none';
+            showNotification('تراکنش با موفقیت ویرایش شد', 'success');
+            // Reload the current report with the same date
+            loadTodayReport(currentReportDate.toISOString().split('T')[0]);
+          } else {
+            // Error - show message and restore button
+            msgDiv.textContent = response.message || 'خطا در ویرایش تراکنش';
+            msgDiv.style.color = '#ff5252';
+          }
+          
+          submitBtn.textContent = originalText;
+          submitBtn.disabled = false;
+        })
+        .catch(function(error) {
+          console.error('Error editing transaction:', error);
+          msgDiv.textContent = 'خطا در اتصال به سرور';
+          msgDiv.style.color = '#ff5252';
+          submitBtn.textContent = originalText;
+          submitBtn.disabled = false;
         });
     }
     

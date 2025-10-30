@@ -37,16 +37,34 @@ function log_message($message) {
 }
 
 try {
+    // Add process lock to prevent concurrent execution
+    $lock_file = __DIR__ . '/logs/pending_credits_cron.lock';
+    $lock_handle = fopen($lock_file, 'w');
+    
+    if (!flock($lock_handle, LOCK_EX | LOCK_NB)) {
+        log_message("Another instance is already running - skipping this execution");
+        fclose($lock_handle);
+        exit(0);
+    }
+    
     log_message("Starting pending credits processing...");
     
-    // Check if pending_credits table exists
+    // Check if pending_credits table exists and has active column
     if (!pending_credits_table_exists($pdo)) {
         log_message("WARNING: pending_credits table does not exist. Creating it...");
         if (!ensure_pending_credits_table($pdo)) {
             log_message("ERROR: Failed to create pending_credits table");
+            flock($lock_handle, LOCK_UN);
+            fclose($lock_handle);
+            unlink($lock_file);
             exit(1);
         }
         log_message("Successfully created pending_credits table");
+    }
+    
+    // Ensure active column exists
+    if (!ensure_pending_credits_active_column($pdo)) {
+        log_message("WARNING: Failed to ensure active column exists in pending_credits table");
     }
     
     // Process all pending credits that are older than 48 hours
@@ -71,6 +89,9 @@ try {
         }
     } else {
         log_message("ERROR: Failed to process pending credits - " . $result['error']);
+        flock($lock_handle, LOCK_UN);
+        fclose($lock_handle);
+        unlink($lock_file);
         exit(1);
     }
     
@@ -90,18 +111,18 @@ try {
         log_message("WARNING: Failed to clean up old records - " . $e->getMessage());
     }
     
-    // Optional: Check for any pending credits that are suspiciously old (more than 7 days)
+    // Optional: Check for any pending credits that are suspiciously old (more than 7 days) and still active
     try {
         $old_pending_stmt = $pdo->prepare("
             SELECT COUNT(*) as count 
             FROM pending_credits 
-            WHERE transferred = 0 AND created_at < DATE_SUB(NOW(), INTERVAL 7 DAY)
+            WHERE transferred = 0 AND active = 1 AND created_at < DATE_SUB(NOW(), INTERVAL 7 DAY)
         ");
         $old_pending_stmt->execute();
         $old_count = $old_pending_stmt->fetchColumn();
         
         if ($old_count > 0) {
-            log_message("WARNING: Found $old_count pending credits older than 7 days. This might indicate a problem.");
+            log_message("WARNING: Found $old_count active pending credits older than 7 days. This might indicate a problem.");
         }
     } catch (Exception $e) {
         log_message("WARNING: Failed to check for old pending credits - " . $e->getMessage());
@@ -109,9 +130,23 @@ try {
     
     log_message("Pending credits processing completed successfully");
     
+    // Release lock
+    flock($lock_handle, LOCK_UN);
+    fclose($lock_handle);
+    unlink($lock_file);
+    
 } catch (Exception $e) {
     log_message("CRITICAL ERROR: " . $e->getMessage());
     log_message("Stack trace: " . $e->getTraceAsString());
+    
+    // Release lock on error
+    if (isset($lock_handle)) {
+        flock($lock_handle, LOCK_UN);
+        fclose($lock_handle);
+        if (file_exists($lock_file)) {
+            unlink($lock_file);
+        }
+    }
     exit(1);
 }
 

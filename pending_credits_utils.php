@@ -19,14 +19,27 @@
  */
 function add_pending_credit($pdo, $subscriber_id, $mobile, $purchase_id, $credit_amount, $branch_id = null, $sales_center_id = null, $admin_number = null) {
     try {
+        // Ensure active column exists
+        ensure_pending_credits_active_column($pdo);
+        
         $stmt = $pdo->prepare('
-            INSERT INTO pending_credits (subscriber_id, mobile, purchase_id, credit_amount, branch_id, sales_center_id, admin_number) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO pending_credits (subscriber_id, mobile, purchase_id, credit_amount, branch_id, sales_center_id, admin_number, active) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
         ');
-        $stmt->execute([$subscriber_id, $mobile, $purchase_id, $credit_amount, $branch_id, $sales_center_id, $admin_number]);
-        return true;
+        $result = $stmt->execute([$subscriber_id, $mobile, $purchase_id, $credit_amount, $branch_id, $sales_center_id, $admin_number]);
+        
+        if ($result) {
+            $pending_id = $pdo->lastInsertId();
+            error_log("Pending Credit Added: ID $pending_id, Subscriber $subscriber_id, Purchase $purchase_id, Amount $credit_amount");
+        }
+        
+        return $result;
     } catch (Exception $e) {
         error_log("Error adding pending credit: " . $e->getMessage());
+        if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
+            error_log("Duplicate pending credit prevented for purchase_id: $purchase_id, subscriber_id: $subscriber_id");
+            return true; // Consider it successful since credit already exists
+        }
         return false;
     }
 }
@@ -42,8 +55,8 @@ function process_pending_credits($pdo, $subscriber_id = null) {
     try {
         $pdo->beginTransaction();
         
-        // Find pending credits older than 48 hours
-        $where_clause = "WHERE transferred = 0 AND created_at <= DATE_SUB(NOW(), INTERVAL 48 HOUR)";
+        // Find pending credits older than 48 hours WITH ROW LOCKING
+        $where_clause = "WHERE transferred = 0 AND active = 1 AND created_at <= DATE_SUB(NOW(), INTERVAL 48 HOUR)";
         $params = [];
         
         if ($subscriber_id) {
@@ -56,6 +69,7 @@ function process_pending_credits($pdo, $subscriber_id = null) {
             FROM pending_credits 
             $where_clause
             ORDER BY created_at ASC
+            FOR UPDATE
         ");
         $stmt->execute($params);
         $pending_credits = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -65,27 +79,34 @@ function process_pending_credits($pdo, $subscriber_id = null) {
         $transferred_details = [];
         
         foreach ($pending_credits as $pending) {
-            // Transfer credit to main balance
-            $update_stmt = $pdo->prepare('UPDATE subscribers SET credit = credit + ? WHERE id = ?');
-            $update_stmt->execute([$pending['credit_amount'], $pending['subscriber_id']]);
-            
-            // Mark as transferred
+            // ATOMIC: Mark as transferred FIRST, then add credit
             $mark_stmt = $pdo->prepare('
                 UPDATE pending_credits 
                 SET transferred = 1, transferred_at = NOW() 
-                WHERE id = ?
+                WHERE id = ? AND transferred = 0
             ');
-            $mark_stmt->execute([$pending['id']]);
+            $mark_result = $mark_stmt->execute([$pending['id']]);
             
-            $transferred_count++;
-            $transferred_amount += $pending['credit_amount'];
-            $transferred_details[] = [
-                'id' => $pending['id'],
-                'subscriber_id' => $pending['subscriber_id'],
-                'mobile' => $pending['mobile'],
-                'amount' => $pending['credit_amount'],
-                'created_at' => $pending['created_at']
-            ];
+            // Only proceed if we successfully marked it as transferred
+            if ($mark_result && $mark_stmt->rowCount() > 0) {
+                // Transfer credit to main balance
+                $update_stmt = $pdo->prepare('UPDATE subscribers SET credit = credit + ? WHERE id = ?');
+                $update_stmt->execute([$pending['credit_amount'], $pending['subscriber_id']]);
+                
+                $transferred_count++;
+                $transferred_amount += $pending['credit_amount'];
+                $transferred_details[] = [
+                    'id' => $pending['id'],
+                    'subscriber_id' => $pending['subscriber_id'],
+                    'mobile' => $pending['mobile'],
+                    'amount' => $pending['credit_amount'],
+                    'created_at' => $pending['created_at']
+                ];
+                
+                error_log("Pending Credit Processed: ID {$pending['id']}, Subscriber {$pending['subscriber_id']}, Amount {$pending['credit_amount']}");
+            } else {
+                error_log("Pending Credit Already Processed: ID {$pending['id']} - skipped to prevent double credit");
+            }
         }
         
         $pdo->commit();
@@ -119,7 +140,7 @@ function get_pending_credits($pdo, $subscriber_id) {
         $stmt = $pdo->prepare('
             SELECT id, credit_amount, created_at, purchase_id, branch_id, sales_center_id
             FROM pending_credits 
-            WHERE subscriber_id = ? AND transferred = 0
+            WHERE subscriber_id = ? AND transferred = 0 AND active = 1
             ORDER BY created_at DESC
         ');
         $stmt->execute([$subscriber_id]);
@@ -156,7 +177,7 @@ function get_pending_credits_by_mobile($pdo, $mobile) {
             SELECT pc.id, pc.credit_amount, pc.created_at, pc.purchase_id, pc.branch_id, pc.sales_center_id, s.id as subscriber_id
             FROM pending_credits pc
             JOIN subscribers s ON pc.subscriber_id = s.id
-            WHERE pc.mobile = ? AND pc.transferred = 0
+            WHERE pc.mobile = ? AND pc.transferred = 0 AND pc.active = 1
             ORDER BY pc.created_at DESC
         ');
         $stmt->execute([$mobile]);
@@ -296,6 +317,32 @@ function pending_credits_table_exists($pdo) {
         $stmt->execute();
         return $stmt->rowCount() > 0;
     } catch (Exception $e) {
+        return false;
+    }
+}
+
+/**
+ * Ensure the active column exists in pending_credits table
+ * 
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function ensure_pending_credits_active_column($pdo) {
+    try {
+        // Check if active column exists
+        $stmt = $pdo->prepare("SHOW COLUMNS FROM pending_credits LIKE 'active'");
+        $stmt->execute();
+        
+        if ($stmt->rowCount() == 0) {
+            // Column doesn't exist, create it
+            $sql = file_get_contents(__DIR__ . '/migrations/add_active_column_pending_credits.sql');
+            $pdo->exec($sql);
+            error_log("Added active column to pending_credits table");
+        }
+        
+        return true;
+    } catch (Exception $e) {
+        error_log("Error ensuring pending_credits active column: " . $e->getMessage());
         return false;
     }
 }

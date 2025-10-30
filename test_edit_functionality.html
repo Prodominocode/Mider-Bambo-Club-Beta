@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Edit Transaction Modal</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0d0d0d;
+            color: #fff;
+            padding: 20px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        
+        .btn-edit {
+            background: #2196f3;
+            color: white;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+        }
+        
+        .modal-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%,-50%);
+            background: #1a1c1e;
+            padding: 20px;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 500px;
+        }
+        
+        input {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #333;
+            background: #0d0d0d;
+            color: #fff;
+            border-radius: 6px;
+        }
+        
+        input[readonly] {
+            background: #0a0a0a;
+            color: #888;
+            border: 1px solid #444;
+        }
+        
+        label {
+            display: block;
+            margin-top: 10px;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Test Edit Transaction Functionality</h1>
+    
+    <p>Click the edit button below to test the modal:</p>
+    
+    <!-- Test transaction table row -->
+    <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+        <thead>
+            <tr style="background: #333;">
+                <th style="padding: 8px; border: 1px solid #444;">موبایل</th>
+                <th style="padding: 8px; border: 1px solid #444;">زمان</th>
+                <th style="padding: 8px; border: 1px solid #444;">مبلغ</th>
+                <th style="padding: 8px; border: 1px solid #444;">شعبه / فروشگاه</th>
+                <th style="padding: 8px; border: 1px solid #444;">مشاور</th>
+                <th style="padding: 8px; border: 1px solid #444;">ادمین</th>
+                <th style="padding: 8px; border: 1px solid #444;">عملیات</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr data-id="123" data-type="purchase" style="border: 1px solid #444;">
+                <td style="padding: 8px;">09123456789</td>
+                <td style="padding: 8px;">14:30</td>
+                <td style="padding: 8px;">200,000</td>
+                <td style="padding: 8px;">شعبه اصلی / فروشگاه 1</td>
+                <td style="padding: 8px;">مشاور تست</td>
+                <td style="padding: 8px;">ادمین تست</td>
+                <td style="padding: 8px;">
+                    <button class="btn btn-edit" data-id="123" data-type="purchase">ویرایش</button>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Edit Transaction Modal -->
+    <div id="edit_transaction_modal" class="modal">
+        <div class="modal-content">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+                <h3 style="margin:0;color:#fff;">ویرایش تراکنش</h3>
+                <button id="close_edit_modal" style="background:none;border:none;color:#fff;font-size:24px;cursor:pointer;">&times;</button>
+            </div>
+            
+            <form id="edit_transaction_form">
+                <input type="hidden" id="edit_transaction_id">
+                <input type="hidden" id="edit_transaction_type" value="purchase">
+                
+                <!-- Read-only fields -->
+                <label style="color:#888;">موبایل مشتری (غیرقابل تغییر)</label>
+                <input type="text" id="edit_mobile" readonly>
+                
+                <label style="color:#888;">تاریخ (غیرقابل تغییر)</label>
+                <input type="text" id="edit_date" readonly>
+                
+                <label style="color:#888;">شعبه / فروشگاه (غیرقابل تغییر)</label>
+                <input type="text" id="edit_branch_store" readonly>
+                
+                <!-- Editable fields -->
+                <label style="color:#888;">مبلغ خرید (تومان) - غیرقابل تغییر</label>
+                <input type="text" id="edit_amount" readonly style="background:#0a0a0a;color:#888;border:1px solid #444;" placeholder="مثال: 200000">
+                
+                <label style="color:#fff;">توضیحات</label>
+                <input type="text" id="edit_description" placeholder="توضیحات اختیاری">
+                
+                <label style="color:#fff;">انتخاب مشاور(ان)</label>
+                <div id="edit_advisors_container" style="max-height:120px;overflow-y:auto;border:1px solid #333;border-radius:6px;padding:8px;background:#0d0d0d;">
+                    <div style="margin-bottom:4px;">
+                        <label style="display:flex;align-items:center;color:#fff;cursor:pointer;">
+                            <input type="checkbox" name="edit_advisor_ids[]" value="1" style="margin-left:8px;">
+                            مشاور تست ۱
+                        </label>
+                    </div>
+                    <div style="margin-bottom:4px;">
+                        <label style="display:flex;align-items:center;color:#fff;cursor:pointer;">
+                            <input type="checkbox" name="edit_advisor_ids[]" value="2" style="margin-left:8px;">
+                            مشاور تست ۲
+                        </label>
+                    </div>
+                </div>
+                
+                <div style="display:flex;gap:10px;margin-top:20px;">
+                    <button type="submit" class="btn" style="flex:1;background:#4caf50;color:white;">ذخیره تغییرات</button>
+                    <button type="button" id="cancel_edit" class="btn" style="flex:1;background:#666;color:white;">انصراف</button>
+                </div>
+            </form>
+            
+            <div id="edit_transaction_msg" style="margin-top:10px;"></div>
+        </div>
+    </div>
+
+    <script>
+        // Event listener for edit button
+        document.addEventListener('click', function(event) {
+            if (event.target.classList.contains('btn-edit')) {
+                const transactionId = event.target.getAttribute('data-id');
+                const transactionType = event.target.getAttribute('data-type');
+                
+                if (transactionType === 'purchase') {
+                    openEditTransactionModal(transactionId);
+                }
+            }
+        });
+
+        // Function to open edit transaction modal (simplified for testing)
+        function openEditTransactionModal(transactionId) {
+            // Get current transaction data from the row for testing
+            const purchaseRow = document.querySelector(`tr[data-id="${transactionId}"][data-type="purchase"]`);
+            if (!purchaseRow) {
+                alert('تراکنش مورد نظر یافت نشد');
+                return;
+            }
+            
+            // Extract transaction data from the row
+            const cells = purchaseRow.querySelectorAll('td');
+            const mobile = cells[0].textContent.trim();
+            const date = cells[1].textContent.trim();
+            const amount = cells[2].textContent.trim().replace(/[^\d]/g, ''); // Extract only digits
+            const branchStore = cells[3].textContent.trim();
+            
+            // Populate the modal form
+            document.getElementById('edit_transaction_id').value = transactionId;
+            document.getElementById('edit_mobile').value = mobile;
+            document.getElementById('edit_date').value = date;
+            document.getElementById('edit_amount').value = amount;
+            document.getElementById('edit_branch_store').value = branchStore;
+            document.getElementById('edit_description').value = '';
+            
+            // Show the modal
+            document.getElementById('edit_transaction_modal').style.display = 'block';
+        }
+
+        // Modal close functionality
+        document.getElementById('close_edit_modal').addEventListener('click', function() {
+            document.getElementById('edit_transaction_modal').style.display = 'none';
+        });
+        
+        document.getElementById('cancel_edit').addEventListener('click', function() {
+            document.getElementById('edit_transaction_modal').style.display = 'none';
+        });
+        
+        // Close modal when clicking outside
+        document.getElementById('edit_transaction_modal').addEventListener('click', function(event) {
+            if (event.target === this) {
+                this.style.display = 'none';
+            }
+        });
+
+        // Form submission (simplified for testing)
+        document.getElementById('edit_transaction_form').addEventListener('submit', function(event) {
+            event.preventDefault();
+            
+            const transactionId = document.getElementById('edit_transaction_id').value;
+            const amount = document.getElementById('edit_amount').value.trim();
+            const description = document.getElementById('edit_description').value.trim();
+            const msgDiv = document.getElementById('edit_transaction_msg');
+            
+            // Get selected advisor IDs
+            const selectedAdvisors = [];
+            document.querySelectorAll('input[name="edit_advisor_ids[]"]:checked').forEach(function(checkbox) {
+                selectedAdvisors.push(checkbox.value);
+            });
+            
+            // Amount field is read-only, so no validation needed
+            // For testing, just show success message
+            msgDiv.textContent = `تراکنش ${transactionId} ویرایش شد. توضیحات: "${description}". مشاوران انتخاب شده: ${selectedAdvisors.join(', ')}`;
+            msgDiv.style.color = '#4caf50';
+            
+            // In real implementation, this would call the server
+            console.log('Edit transaction:', {
+                transaction_id: transactionId,
+                amount: amount, // Read-only value
+                description: description,
+                advisor_ids: selectedAdvisors
+            });
+        });
+    </script>
+</body>
+</html>

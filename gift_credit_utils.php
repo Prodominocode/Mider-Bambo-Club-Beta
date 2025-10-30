@@ -424,6 +424,41 @@ function update_gift_credit_notes($admin_mobile, $gift_credit_id, $notes) {
 }
 
 /**
+ * Deactivate a gift credit and adjust subscriber balance
+ *
+ * @param string $admin_mobile Admin mobile number (who is deactivating)
+ * @param int $gift_credit_id Gift credit ID to deactivate
+ * @param string $deactivation_reason Optional reason for deactivation
+ * @return array Result with status and message
+ */
+function deactivate_gift_credit($admin_mobile, $gift_credit_id, $deactivation_reason = '') {
+    global $pdo;
+    
+    if (!can_manage_gift_credits($admin_mobile)) {
+        return ['status' => 'error', 'message' => 'شما مجاز به مدیریت اعتبار هدیه نیستید'];
+    }
+    
+    // Validate input
+    if (!is_numeric($gift_credit_id) || $gift_credit_id < 1) {
+        return ['status' => 'error', 'message' => 'شناسه اعتبار هدیه معتبر نیست'];
+    }
+    
+    require_once 'credit_deactivation_utils.php';
+    
+    $result = deactivate_gift_credit_with_adjustment($pdo, $gift_credit_id, $admin_mobile);
+    
+    if ($result['success']) {
+        return [
+            'status' => 'success', 
+            'message' => 'اعتبار هدیه با موفقیت غیرفعال شد و اعتبار کاربر تنظیم گردید',
+            'details' => $result['details']
+        ];
+    } else {
+        return ['status' => 'error', 'message' => $result['message']];
+    }
+}
+
+/**
  * Get gift credit statistics
  *
  * @param string $admin_mobile Admin mobile number (for permission check)

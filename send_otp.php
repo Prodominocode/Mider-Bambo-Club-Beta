@@ -4,7 +4,16 @@ require_once 'db.php';
 require_once 'config.php';
 require_once 'branch_utils.php';
 
-$mobile = isset($_POST['mobile']) ? trim($_POST['mobile']) : '';
+// Persian/Farsi digit normalization function
+function norm_digits($s){
+    $persian = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹','٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+    $latin =   ['0','1','2','3','4','5','6','7','8','9','0','1','2','3','4','5','6','7','8','9'];
+    $s = str_replace($persian, $latin, $s);
+    $s = preg_replace('/\s+/', '', $s);
+    return $s;
+}
+
+$mobile = isset($_POST['mobile']) ? norm_digits(trim($_POST['mobile'])) : '';
 if (!$mobile) {
     echo json_encode(['status' => 'error', 'message' => 'لطفاً شماره موبایل را وارد کنید.']);
     exit;
